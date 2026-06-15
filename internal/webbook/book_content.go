@@ -307,39 +307,44 @@ func (p *ContentParser) extractContent(sel *goquery.Selection) string {
 	var texts []string
 
 	sel.Contents().Each(func(_ int, s *goquery.Selection) {
-		switch s.Get(0).Data {
-		case "#text":
+		node := s.Get(0)
+		// html.NodeType: TextNode=1, ElementNode=3
+		switch node.Type {
+		case 1: // TextNode
 			t := strings.TrimSpace(s.Text())
 			if t != "" {
 				texts = append(texts, t)
 			}
-		case "p", "div", "h1", "h2", "h3", "h4", "h5", "h6":
-			t := strings.TrimSpace(s.Text())
-			if t != "" {
-				texts = append(texts, t)
-			}
-			if p.KeepLineBreaks {
-				texts = append(texts, "") // 空行分隔
-			}
-		case "br":
-			if p.KeepLineBreaks {
-				texts = append(texts, "")
-			}
-		case "ul", "ol":
-			// 列表内容
-			s.Find("li").Each(func(_ int, li *goquery.Selection) {
-				t := strings.TrimSpace(li.Text())
+		case 3: // ElementNode
+			switch node.Data {
+			case "p", "div", "h1", "h2", "h3", "h4", "h5", "h6":
+				t := strings.TrimSpace(s.Text())
 				if t != "" {
 					texts = append(texts, t)
 				}
-			})
-		case "li":
-			t := strings.TrimSpace(s.Text())
-			if t != "" {
-				texts = append(texts, t)
+				if p.KeepLineBreaks {
+					texts = append(texts, "") // 空行分隔
+				}
+			case "br":
+				if p.KeepLineBreaks {
+					texts = append(texts, "")
+				}
+			case "ul", "ol":
+				// 列表内容
+				s.Find("li").Each(func(_ int, li *goquery.Selection) {
+					t := strings.TrimSpace(li.Text())
+					if t != "" {
+						texts = append(texts, t)
+					}
+				})
+			case "li":
+				t := strings.TrimSpace(s.Text())
+				if t != "" {
+					texts = append(texts, t)
+				}
+			case "img":
+				// 漫画模式下正文可能只有图片，这里不把 alt 文本混入小说正文。
 			}
-		case "img":
-			// 漫画模式下正文可能只有图片，这里不把 alt 文本混入小说正文。
 		}
 	})
 
