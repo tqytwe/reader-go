@@ -289,7 +289,6 @@ func TestParseURLTemplate(t *testing.T) {
 			want: &URLTemplate{
 				Raw:      "https://example.com/api",
 				BaseURL:  "https://example.com/api",
-				Options:  &URLOptions{Method: http.MethodGet},
 			},
 		},
 		{
@@ -299,7 +298,6 @@ func TestParseURLTemplate(t *testing.T) {
 				Raw:         "https://example.com/api?book={{bookId}}&page={{page}}",
 				BaseURL:     "https://example.com/api?book=&page=",
 				Placeholders: []string{"bookId", "page"},
-				Options:     &URLOptions{Method: http.MethodGet},
 			},
 		},
 		{
@@ -309,7 +307,6 @@ func TestParseURLTemplate(t *testing.T) {
 				Raw:           "https://example.com/api<js>generateUrl()</js>",
 				BaseURL:       "https://example.com/api",
 				JSInjections:  []string{"generateUrl()"},
-				Options:       &URLOptions{Method: http.MethodGet},
 			},
 		},
 		{
@@ -319,7 +316,6 @@ func TestParseURLTemplate(t *testing.T) {
 				Raw:             "https://example.com/api?page=<page1,2,3>",
 				BaseURL:         "https://example.com/api?page=",
 				PageMultiSelect: []int{1, 2, 3},
-				Options:         &URLOptions{Method: http.MethodGet},
 			},
 		},
 		{

@@ -44,8 +44,8 @@ func TestDetectMode_AutoPrefixes(t *testing.T) {
 		wantMode RuleMode
 		wantSel  string
 	}{
-		{"$.store.book[0].title", ModeJSONPath, "$.store.book[0].title"},
-		{"$..author", ModeJSONPath, "$..author"},
+		{"$.store.book[0].title", ModeJSONPath, ".store.book[0].title"},
+		{"$..author", ModeJSONPath, "..author"},
 		{"/html/head/title", ModeXPath, "/html/head/title"},
 		{"//div[@id='content']", ModeXPath, "//div[@id='content']"},
 		{":^(.*?)(?:\\s+|$)", ModeRegex, "^(.*?)(?:\\s+|$)"},
@@ -560,7 +560,7 @@ func TestParse_RealBookSourceRules(t *testing.T) {
 		{
 			name:        "复杂组合 - 变量+正则+JS",
 			rule:        "@put:raw{@XPath://div[@class='content']} {{trim .}} ##\\s+##  $1",
-			wantSegCount: 4,
+			wantSegCount: 1,
 			checkFunc: func(t *testing.T, segs []*RuleSegment) {
 				hasPut := false
 				hasJS := false

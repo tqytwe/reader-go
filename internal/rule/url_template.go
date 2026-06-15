@@ -15,8 +15,11 @@ type URLTemplate struct {
 	// Raw 原始 URL 模板字符串
 	Raw string
 
-	// BaseURL 基础 URL（不含选项部分）
+	// BaseURL 基础 URL（不含选项部分和模板语法）
 	BaseURL string
+
+	// TemplateURL 模板 URL（保留 {{key}} 占位符，用于 Evaluate 替换）
+	TemplateURL string
 
 	// JSInjections JS 注入片段列表 <js>...</js>
 	JSInjections []string
@@ -28,7 +31,7 @@ type URLTemplate struct {
 	// 格式: [1,2,3] 表示第1页用1，第2页用2，第3页及以后用3
 	PageMultiSelect []int
 
-	// Options URL 请求选项
+	// Options URL 请求选项（仅在显式提供时设置）
 	Options *URLOptions
 }
 
@@ -91,7 +94,7 @@ var (
 	placeholderRe = regexp.MustCompile(`\{\{([^}]+)\}\}`)
 
 	// pageMultiSelectRe 匹配 <page1,2,3>
-	pageMultiSelectRe = regexp.MustCompile(`<page([\d,\s]+)`)
+	pageMultiSelectRe = regexp.MustCompile(`<page([\d,\s]+)>`)
 
 	// urlOptionsRe 匹配 URL 末尾的选项部分
 	// 格式: , {"method":"POST", "headers":{...}, ...}
@@ -148,7 +151,10 @@ func ParseURLTemplate(url string) (*URLTemplate, error) {
 	// 5. 构建基础 URL（移除所有模板语法标记）
 	tmpl.BaseURL = buildBaseURL(urlWithoutOptions, tmpl.JSInjections, tmpl.Placeholders, tmpl.PageMultiSelect)
 
-	// 6. 解析 URL 选项
+	// 5.1 构建模板 URL（保留 {{key}} 占位符，用于 Evaluate 替换）
+	tmpl.TemplateURL = buildTemplateURL(urlWithoutOptions, tmpl.JSInjections, tmpl.PageMultiSelect)
+
+	// 6. 解析 URL 选项（仅在显式提供时设置 Options）
 	if options != "" {
 		opts, err := parseURLOptionsJSON(options)
 		if err != nil {
@@ -165,11 +171,15 @@ func ParseURLTemplate(url string) (*URLTemplate, error) {
 // parseURLOptions 从 URL 字符串中提取选项部分
 // 返回 (去除选项的URL, 选项JSON字符串)
 func parseURLOptions(url string) (string, string) {
-	matches := urlOptionsRe.FindStringSubmatch(url)
-	if len(matches) >= 2 {
-		return url[:len(url)-len(matches[1])-1], matches[1] // 减去前面的 ", "
+	matches := urlOptionsRe.FindStringSubmatchIndex(url)
+	if matches == nil {
+		return url, ""
 	}
-	return url, ""
+	// matches[0]:matches[1] 是完整匹配（包括逗号和空格）
+	// matches[2]:matches[3] 是第一个捕获组（JSON 部分）
+	urlPart := strings.TrimSpace(url[:matches[0]])
+	jsonPart := url[matches[2]:matches[3]]
+	return urlPart, jsonPart
 }
 
 // parseURLOptionsJSON 解析选项 JSON 字符串
@@ -200,26 +210,37 @@ func parseLooseURLOptions(jsonStr string) (*URLOptions, error) {
 	// 移除外层大括号
 	content := strings.TrimPrefix(jsonStr, "{")
 	content = strings.TrimSuffix(content, "}")
+	content = strings.TrimSpace(content)
+
+	if content == "" {
+		return opts, nil
+	}
+
+	foundOption := false
 
 	// 解析 method
 	if m := regexp.MustCompile(`["']?method["']?\s*:\s*["']([^"']+)["']`).FindStringSubmatch(content); len(m) >= 2 {
 		opts.Method = m[1]
+		foundOption = true
 	}
 
 	// 解析 charset
 	if m := regexp.MustCompile(`["']?charset["']?\s*:\s*["']([^"']+)["']`).FindStringSubmatch(content); len(m) >= 2 {
 		opts.Charset = m[1]
+		foundOption = true
 	}
 
 	// 解析 retry
 	if m := regexp.MustCompile(`["']?retry["']?\s*:\s*(\d+)`).FindStringSubmatch(content); len(m) >= 2 {
 		opts.Retry = 0
 		fmt.Sscanf(m[1], "%d", &opts.Retry)
+		foundOption = true
 	}
 
 	// 解析 body
 	if m := regexp.MustCompile(`["']?body["']?\s*:\s*["']([^"']*)["']`).FindStringSubmatch(content); len(m) >= 2 {
 		opts.Body = m[1]
+		foundOption = true
 	}
 
 	// 解析 headers
@@ -234,6 +255,11 @@ func parseLooseURLOptions(jsonStr string) (*URLOptions, error) {
 				opts.Headers[hm[1]] = hm[2]
 			}
 		}
+		foundOption = true
+	}
+
+	if !foundOption {
+		return nil, fmt.Errorf("invalid url options format: no valid options found")
 	}
 
 	return opts, nil
@@ -277,10 +303,49 @@ func buildBaseURL(url string, jsInjs []string, placeholders []string, pageMulti 
 	}
 	result = pageMultiSelectRe.ReplaceAllString(result, "")
 
+	// 清理因移除 <page...> 可能产生的路径双斜杠
+	result = cleanDoubleSlashes(result)
+
 	return strings.TrimSpace(result)
 }
 
-// ==================== Evaluate ====================
+// buildTemplateURL 构建模板 URL（保留 {{key}} 占位符，移除 JS 注入和页数多选）
+// 用于 Evaluate 中的占位符替换
+func buildTemplateURL(url string, jsInjs []string, pageMulti []int) string {
+	result := url
+
+	// 移除 <js>...</js>
+	for _, injection := range jsInjs {
+		result = strings.Replace(result, "<js>"+injection+"</js>", "", -1)
+	}
+
+	// 移除 <page...>
+	result = pageMultiSelectRe.ReplaceAllString(result, "")
+
+	// 清理因移除 <page...> 可能产生的路径双斜杠
+	result = cleanDoubleSlashes(result)
+
+	return strings.TrimSpace(result)
+}
+
+// cleanDoubleSlashes 清理 URL 路径中的双斜杠（保留协议中的 ://）
+func cleanDoubleSlashes(url string) string {
+	// 查找协议分隔符 ://
+	protoEnd := 0
+	if idx := strings.Index(url, "://"); idx >= 0 {
+		protoEnd = idx + 3
+	}
+
+	if protoEnd < len(url) {
+		path := url[protoEnd:]
+		for strings.Contains(path, "//") {
+			path = strings.ReplaceAll(path, "//", "/")
+		}
+		url = url[:protoEnd] + path
+	}
+
+	return url
+}
 
 // Evaluate 使用给定的参数和页数计算最终 URL
 // params: {{key}} 的替换值
@@ -293,8 +358,11 @@ func (t *URLTemplate) Evaluate(params map[string]string, page int) (*ParsedURL, 
 	// 计算页数多选的值
 	pageValue := calculatePageValue(t.PageMultiSelect, page)
 
-	// 构建 URL
-	url := t.BaseURL
+	// 构建 URL（使用 TemplateURL 保留 {{key}} 占位符用于替换）
+	url := t.TemplateURL
+	if url == "" {
+		url = t.BaseURL
+	}
 
 	// 替换占位符
 	if params == nil {
@@ -311,17 +379,20 @@ func (t *URLTemplate) Evaluate(params map[string]string, page int) (*ParsedURL, 
 	// 这里我们记录 JS 注入点，实际执行由调用方处理
 	// 对于简单的 JS 注入，我们可以尝试用 Go 的 eval 替代方案
 
-	// 构建 ParsedURL
+	// 构建 ParsedURL（处理 nil Options）
 	result := &ParsedURL{
 		URL:       url,
-		Method:    t.Options.Method,
-		Headers:   t.Options.Headers,
-		Body:      t.Options.Body,
-		Charset:   t.Options.Charset,
-		Retry:     t.Options.Retry,
 		Template:  t,
 		PageValue: pageValue,
 		Params:    params,
+	}
+
+	if t.Options != nil {
+		result.Method = t.Options.Method
+		result.Headers = t.Options.Headers
+		result.Body = t.Options.Body
+		result.Charset = t.Options.Charset
+		result.Retry = t.Options.Retry
 	}
 
 	// 设置默认值

@@ -2,9 +2,13 @@ package epub
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -333,15 +337,9 @@ func processImages(n *html.Node, content *ChapterContent, book *Book, zrc *ZipRe
 func handleDataURI(dataURI string, node *html.Node, content *ChapterContent) {
 	// 提取 base64 部分
 	if idx := strings.Index(dataURI, ","); idx > 0 {
-		header := dataURI[:idx]
-		body := dataURI[idx+1:]
-
-		// 记录
-		content.Images[header] = dataURI
-		content.ImageOrder = append(content.ImageOrder, header)
-
-		// 保留原 data URI（可能已经嵌入）
-		_ = body // suppress unused variable
+		// 使用完整 data URI 作为 key，以便在导出时能准确替换 HTML 中的 src
+		content.Images[dataURI] = dataURI
+		content.ImageOrder = append(content.ImageOrder, dataURI)
 	}
 }
 
@@ -578,18 +576,138 @@ func countChineseChars(text string) int {
 // =============================================================================
 
 // ExportWithImages 导出章节内容，将图片保存为单独文件
+// 导出结构：
+//   outputDir/chapter_NNN.html  - 更新后的 HTML（img src 指向本地文件）
+//   outputDir/images/           - 导出的图片文件
 func (b *Book) ExportWithImages(chapterIndex int, zrc *ZipReadCloser, outputDir string) error {
-	_, err := b.GetChapterContent(chapterIndex, zrc)
+	content, err := b.GetChapterContent(chapterIndex, zrc)
 	if err != nil {
 		return err
 	}
 
-	// TODO: 实现图片导出
-	// 1. 创建 outputDir/images 目录
-	// 2. 将 base64 图片解码保存
-	// 3. 更新 HTML 中的 src 为相对路径
+	// 创建输出目录
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output dir: %w", err)
+	}
 
-	return fmt.Errorf("ExportWithImages not yet implemented")
+	// 创建 images 子目录
+	imagesDir := filepath.Join(outputDir, "images")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create images dir: %w", err)
+	}
+
+	// 从 content.Images（src → data URI 映射）解码保存图片
+	// 并构建原始 src → 本地文件名的映射
+	imageMap, err := saveImagesFromContent(content, imagesDir)
+	if err != nil {
+		return fmt.Errorf("failed to save images: %w", err)
+	}
+
+	// 更新 RawHTML 中的原始 src 为本地相对路径
+	updatedHTML := content.RawHTML
+	for originalSrc, filename := range imageMap {
+		updatedHTML = strings.ReplaceAll(updatedHTML, originalSrc, "images/"+filename)
+	}
+
+	// 保存更新后的 HTML
+	htmlFilename := fmt.Sprintf("chapter_%03d.html", chapterIndex)
+	htmlPath := filepath.Join(outputDir, htmlFilename)
+	if err := os.WriteFile(htmlPath, []byte(updatedHTML), 0644); err != nil {
+		return fmt.Errorf("failed to write HTML: %w", err)
+	}
+
+	return nil
+}
+
+// saveImagesFromContent 从 ChapterContent 的 Images 映射中解码保存图片
+// 返回原始 src → 文件名的映射
+func saveImagesFromContent(content *ChapterContent, imagesDir string) (map[string]string, error) {
+	imageMap := make(map[string]string)
+	usedNames := make(map[string]bool)
+
+	for _, src := range content.ImageOrder {
+		dataURI, ok := content.Images[src]
+		if !ok {
+			continue
+		}
+
+		// 已处理过则跳过
+		if _, exists := imageMap[src]; exists {
+			continue
+		}
+
+		// 解析 data URI: data:[<mime>][;base64],<data>
+		commaIdx := strings.Index(dataURI, ",")
+		if commaIdx < 0 {
+			continue
+		}
+
+		header := dataURI[:commaIdx]
+		base64Data := dataURI[commaIdx+1:]
+
+		// 提取 MIME 类型
+		mime := ""
+		if strings.HasPrefix(header, "data:") {
+			mimePart := strings.TrimPrefix(header, "data:")
+			mime = strings.TrimSuffix(mimePart, ";base64")
+		}
+
+		// 解码 base64
+		imgData, err := base64.StdEncoding.DecodeString(base64Data)
+		if err != nil {
+			continue
+		}
+
+		// 生成文件名
+		ext := mimeToExtension(mime)
+		filename := generateImageFilename(imgData, ext, usedNames)
+		usedNames[filename] = true
+
+		// 保存到文件
+		filePath := filepath.Join(imagesDir, filename)
+		if err := os.WriteFile(filePath, imgData, 0644); err != nil {
+			return nil, fmt.Errorf("failed to write image %s: %w", filename, err)
+		}
+
+		imageMap[src] = filename
+	}
+
+	return imageMap, nil
+}
+
+// generateImageFilename 根据图片数据生成唯一文件名
+func generateImageFilename(data []byte, ext string, usedNames map[string]bool) string {
+	hash := sha256.Sum256(data)
+	shortHash := hex.EncodeToString(hash[:8]) // 16 字符
+
+	filename := fmt.Sprintf("img_%s%s", shortHash, ext)
+
+	// 确保文件名唯一
+	if usedNames[filename] {
+		extra := sha256.Sum256(data)
+		extraHash := hex.EncodeToString(extra[:12])
+		filename = fmt.Sprintf("img_%s%s", extraHash, ext)
+	}
+
+	return filename
+}
+
+// mimeToExtension 将 MIME 类型转换为文件扩展名
+func mimeToExtension(mime string) string {
+	switch mime {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/svg+xml":
+		return ".svg"
+	default:
+		return ".jpg"
+	}
 }
 
 // GetImageCount 获取书籍中的图片总数

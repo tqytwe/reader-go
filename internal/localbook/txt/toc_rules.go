@@ -106,9 +106,9 @@ var DefaultTocRules = []*TocRule{
 		Priority:  60,
 		GroupCount: 1,
 	},
-	// 10. 仅标题（无编号，但单独成行且长度合理）
+	// 10. 仅标题（无编号，但单独成行且长度合理，不含句末标点）
 	{
-		Pattern:   `^([^0-9\n]{4,30})$`,
+		Pattern:   `^([^0-9\n。，！？…]{4,30})$`,
 		Name:      "pure_title",
 		Priority:  50,
 		GroupCount: 1,
@@ -162,7 +162,7 @@ var DefaultTocRules = []*TocRule{
 		Priority:  93,
 		GroupCount: 2,
 	},
-	// 18. 纯标题（过滤常见非章节文本）
+	// 18. 纯标题（过滤常见非章节文本，不含句末标点）
 	{
 		Pattern:   `^([^0-9\n。，！？…]{4,50})$`,
 		Name:      "filtered_title",
@@ -223,30 +223,36 @@ func (a *TocAnalyzer) Analyze(text string) (*TocRule, []*TocRuleMatch) {
 	lines := strings.Split(text, "\n")
 	allMatches := make([]*TocRuleMatch, 0)
 
-	for lineIdx, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
+	// 跟踪字节偏移（UTF-8 编码后的字节位置）
+	byteOffset := 0
 
-		// 对每条规则尝试匹配
-		for _, rule := range a.Rules {
-			matches := rule.Regex.FindStringSubmatch(line)
-			if matches != nil {
-				a.ruleHits[rule.Name]++
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			// 对每条规则尝试匹配，第一个匹配的规则胜出（优先级最高）
+			for _, rule := range a.Rules {
+				matches := rule.Regex.FindStringSubmatch(trimmed)
+				if matches != nil {
+					a.ruleHits[rule.Name]++
 
-				// 提取章节标题
-				title := a.extractTitle(rule, matches)
-				if title != "" {
-					allMatches = append(allMatches, &TocRuleMatch{
-						Title:    title,
-						Position: int64(lineIdx), // 简化：用行号代替字节偏移
-						RawText:  line,
-						Groups:   matches,
-					})
+					// 提取章节标题
+					title := a.extractTitle(rule, matches)
+					if title != "" {
+						allMatches = append(allMatches, &TocRuleMatch{
+							Title:    title,
+							Position: int64(byteOffset),
+							RawText:  trimmed,
+							Groups:   matches,
+						})
+					}
+					// 第一个匹配的规则胜出，不再尝试后续规则
+					break
 				}
 			}
 		}
+
+		// 更新字节偏移（行内容 + 换行符）
+		byteOffset += len(line) + 1
 	}
 
 	// 找出命中次数最多的规则

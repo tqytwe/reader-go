@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -851,6 +852,401 @@ func TestChapterContentImages(t *testing.T) {
 	// 验证内容包含图片 alt 文本
 	if !strings.Contains(content.Content, "测试图片") && !strings.Contains(content.Content, "[图片]") {
 		t.Log("Note: Image placeholder may vary")
+	}
+}
+
+// =============================================================================
+// ExportWithImages 测试
+// =============================================================================
+
+func TestExportWithImagesNoImages(t *testing.T) {
+	buf := createTestEPUB(t, "simple")
+	tmpFile := saveTestEPUB(t, buf)
+
+	book, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	archive, err := zip.OpenReader(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to open zip: %v", err)
+	}
+	defer archive.Close()
+
+	zrc := &ZipReadCloser{R: &archive.Reader, Closer: archive}
+
+	outputDir := t.TempDir()
+	err = book.ExportWithImages(0, zrc, outputDir)
+	if err != nil {
+		t.Fatalf("ExportWithImages failed: %v", err)
+	}
+
+	// 验证 HTML 文件已创建
+	htmlFile := filepath.Join(outputDir, "chapter_000.html")
+	if _, err := os.Stat(htmlFile); err != nil {
+		t.Errorf("Expected HTML file to exist: %v", err)
+	}
+
+	// 验证 images 目录已创建
+	imagesDir := filepath.Join(outputDir, "images")
+	info, err := os.Stat(imagesDir)
+	if err != nil {
+		t.Errorf("Expected images dir to exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("Expected images to be a directory")
+	}
+}
+
+func TestExportWithImagesWithBase64Images(t *testing.T) {
+	// 创建带图片的 EPUB
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+
+	// mimetype
+	w, _ := zw.Create("mimetype")
+	w.Write([]byte("application/epub+zip"))
+
+	// container.xml
+	w, _ = zw.Create("META-INF/container.xml")
+	w.Write([]byte(`<?xml version="1.0"?><container version="1.0"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`))
+
+	// content.opf
+	w, _ = zw.Create("content.opf")
+	w.Write([]byte(`<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">img-export-test</dc:identifier>
+    <dc:title>图片导出测试</dc:title>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="chapter1.html" media-type="application/xhtml+xml"/>
+    <item id="image1" href="images/pic1.jpg" media-type="image/jpeg"/>
+    <item id="image2" href="images/pic2.png" media-type="image/png"/>
+  </manifest>
+  <spine><itemref idref="chapter1"/></spine>
+</package>`))
+
+	// chapter1.html with two images
+	w, _ = zw.Create("chapter1.html")
+	w.Write([]byte(`<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">
+<body><h1>带图片的章节</h1>
+<p>第一张图片：</p>
+<img src="images/pic1.jpg" alt="JPEG图片"/>
+<p>第二张图片：</p>
+<img src="images/pic2.png" alt="PNG图片"/>
+<p>图片之后。</p>
+</body></html>`))
+
+	// images/pic1.jpg (fake JPEG with valid header)
+	w, _ = zw.Create("images/pic1.jpg")
+	jpegData := make([]byte, 200)
+	jpegData[0] = 0xFF
+	jpegData[1] = 0xD8
+	jpegData[2] = 0xFF
+	jpegData[3] = 0xE0
+	for i := 4; i < 200; i++ {
+		jpegData[i] = byte(i % 256)
+	}
+	w.Write(jpegData)
+
+	// images/pic2.png (fake PNG with valid header)
+	w, _ = zw.Create("images/pic2.png")
+	pngData := make([]byte, 150)
+	pngData[0] = 0x89
+	pngData[1] = 0x50
+	pngData[2] = 0x4E
+	pngData[3] = 0x47
+	for i := 4; i < 150; i++ {
+		pngData[i] = byte(i % 256)
+	}
+	w.Write(pngData)
+
+	zw.Close()
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "img-export-test.epub")
+	os.WriteFile(tmpFile, buf.Bytes(), 0644)
+
+	book, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	archive, err := zip.OpenReader(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to open zip: %v", err)
+	}
+	defer archive.Close()
+
+	zrc := &ZipReadCloser{R: &archive.Reader, Closer: archive}
+
+	outputDir := t.TempDir()
+	err = book.ExportWithImages(0, zrc, outputDir)
+	if err != nil {
+		t.Fatalf("ExportWithImages failed: %v", err)
+	}
+
+	// 验证 HTML 文件
+	htmlFile := filepath.Join(outputDir, "chapter_000.html")
+	htmlData, err := os.ReadFile(htmlFile)
+	if err != nil {
+		t.Fatalf("Failed to read HTML file: %v", err)
+	}
+	htmlContent := string(htmlData)
+
+	// 验证 HTML 不包含 base64 data URI
+	if strings.Contains(htmlContent, "data:image") {
+		t.Errorf("Expected HTML to not contain data URIs, but it does")
+	}
+
+	// 验证 HTML 包含 images/ 相对路径
+	if !strings.Contains(htmlContent, "images/img_") {
+		t.Errorf("Expected HTML to contain relative image paths, got: %s", htmlContent)
+	}
+
+	// 验证 images 目录中有文件
+	imagesDir := filepath.Join(outputDir, "images")
+	entries, err := os.ReadDir(imagesDir)
+	if err != nil {
+		t.Fatalf("Failed to read images dir: %v", err)
+	}
+
+	if len(entries) != 2 {
+		t.Errorf("Expected 2 image files, got %d", len(entries))
+	}
+
+	// 验证图片文件有正确扩展名和内容
+	foundJPG := false
+	foundPNG := false
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".jpg") {
+			foundJPG = true
+			data, err := os.ReadFile(filepath.Join(imagesDir, entry.Name()))
+			if err != nil {
+				t.Errorf("Failed to read image file: %v", err)
+			}
+			if len(data) != 200 {
+				t.Errorf("Expected JPEG data length 200, got %d", len(data))
+			}
+			// 验证 JPEG 头
+			if data[0] != 0xFF || data[1] != 0xD8 {
+				t.Errorf("Expected JPEG header, got %02X %02X", data[0], data[1])
+			}
+		}
+		if strings.HasSuffix(entry.Name(), ".png") {
+			foundPNG = true
+			data, err := os.ReadFile(filepath.Join(imagesDir, entry.Name()))
+			if err != nil {
+				t.Errorf("Failed to read image file: %v", err)
+			}
+			if len(data) != 150 {
+				t.Errorf("Expected PNG data length 150, got %d", len(data))
+			}
+			// 验证 PNG 头
+			if data[0] != 0x89 || data[1] != 0x50 {
+				t.Errorf("Expected PNG header, got %02X %02X", data[0], data[1])
+			}
+		}
+	}
+
+	if !foundJPG {
+		t.Errorf("Expected to find a .jpg file")
+	}
+	if !foundPNG {
+		t.Errorf("Expected to find a .png file")
+	}
+}
+
+func TestExportWithImagesDataURI(t *testing.T) {
+	// 创建带 data URI 图片的 EPUB
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+
+	w, _ := zw.Create("mimetype")
+	w.Write([]byte("application/epub+zip"))
+
+	w, _ = zw.Create("META-INF/container.xml")
+	w.Write([]byte(`<?xml version="1.0"?><container version="1.0"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`))
+
+	w, _ = zw.Create("content.opf")
+	w.Write([]byte(`<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">data-uri-test</dc:identifier>
+    <dc:title>Data URI 测试</dc:title>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="chapter1.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="chapter1"/></spine>
+</package>`))
+
+	// 创建一个小的 PNG 图片数据
+	pngData := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D}
+	for i := 0; i < 50; i++ {
+		pngData = append(pngData, byte(i))
+	}
+	base64Data := base64.StdEncoding.EncodeToString(pngData)
+
+	w, _ = zw.Create("chapter1.html")
+	w.Write([]byte(fmt.Sprintf(`<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">
+<body><h1>Data URI 章节</h1>
+<img src="data:image/png;base64,%s" alt="内嵌图片"/>
+<p>图片之后。</p>
+</body></html>`, base64Data)))
+
+	zw.Close()
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "data-uri-test.epub")
+	os.WriteFile(tmpFile, buf.Bytes(), 0644)
+
+	book, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	archive, err := zip.OpenReader(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to open zip: %v", err)
+	}
+	defer archive.Close()
+
+	zrc := &ZipReadCloser{R: &archive.Reader, Closer: archive}
+
+	outputDir := t.TempDir()
+	err = book.ExportWithImages(0, zrc, outputDir)
+	if err != nil {
+		t.Fatalf("ExportWithImages failed: %v", err)
+	}
+
+	// 验证 HTML 文件
+	htmlFile := filepath.Join(outputDir, "chapter_000.html")
+	htmlData, err := os.ReadFile(htmlFile)
+	if err != nil {
+		t.Fatalf("Failed to read HTML file: %v", err)
+	}
+	htmlContent := string(htmlData)
+
+	// 验证 HTML 不包含 data URI
+	if strings.Contains(htmlContent, "data:image") {
+		t.Errorf("Expected HTML to not contain data URI, but it does")
+	}
+
+	// 验证 HTML 包含相对路径
+	if !strings.Contains(htmlContent, "images/") {
+		t.Errorf("Expected HTML to contain relative image path")
+	}
+
+	// 验证图片文件存在
+	imagesDir := filepath.Join(outputDir, "images")
+	entries, err := os.ReadDir(imagesDir)
+	if err != nil {
+		t.Fatalf("Failed to read images dir: %v", err)
+	}
+
+	if len(entries) != 1 {
+		t.Errorf("Expected 1 image file, got %d", len(entries))
+	}
+
+	if len(entries) > 0 {
+		// 验证扩展名
+		if !strings.HasSuffix(entries[0].Name(), ".png") {
+			t.Errorf("Expected .png extension, got %s", entries[0].Name())
+		}
+
+		// 验证文件内容
+		data, err := os.ReadFile(filepath.Join(imagesDir, entries[0].Name()))
+		if err != nil {
+			t.Fatalf("Failed to read image file: %v", err)
+		}
+		if !bytes.Equal(data, pngData) {
+			t.Errorf("Image data mismatch: expected %d bytes, got %d bytes", len(pngData), len(data))
+		}
+	}
+}
+
+func TestExportWithImagesInvalidChapter(t *testing.T) {
+	buf := createTestEPUB(t, "simple")
+	tmpFile := saveTestEPUB(t, buf)
+
+	book, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	archive, err := zip.OpenReader(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to open zip: %v", err)
+	}
+	defer archive.Close()
+
+	zrc := &ZipReadCloser{R: &archive.Reader, Closer: archive}
+
+	outputDir := t.TempDir()
+
+	// 测试无效章节索引
+	err = book.ExportWithImages(-1, zrc, outputDir)
+	if err == nil {
+		t.Error("Expected error for invalid chapter index")
+	}
+
+	err = book.ExportWithImages(100, zrc, outputDir)
+	if err == nil {
+		t.Error("Expected error for out-of-range chapter index")
+	}
+}
+
+func TestMimeToExtension(t *testing.T) {
+	tests := []struct {
+		mime string
+		want string
+	}{
+		{"image/jpeg", ".jpg"},
+		{"image/png", ".png"},
+		{"image/gif", ".gif"},
+		{"image/webp", ".webp"},
+		{"image/svg+xml", ".svg"},
+		{"application/octet-stream", ".jpg"},
+		{"", ".jpg"},
+	}
+
+	for _, tt := range tests {
+		got := mimeToExtension(tt.mime)
+		if got != tt.want {
+			t.Errorf("mimeToExtension(%q) = %q, want %q", tt.mime, got, tt.want)
+		}
+	}
+}
+
+func TestGenerateImageFilename(t *testing.T) {
+	usedNames := make(map[string]bool)
+
+	data1 := []byte("test image data 1")
+	data2 := []byte("test image data 2")
+
+	name1 := generateImageFilename(data1, ".jpg", usedNames)
+	if !strings.HasPrefix(name1, "img_") {
+		t.Errorf("Expected prefix 'img_', got %q", name1)
+	}
+	if !strings.HasSuffix(name1, ".jpg") {
+		t.Errorf("Expected suffix '.jpg', got %q", name1)
+	}
+
+	usedNames[name1] = true
+
+	name2 := generateImageFilename(data2, ".png", usedNames)
+	if !strings.HasSuffix(name2, ".png") {
+		t.Errorf("Expected suffix '.png', got %q", name2)
+	}
+	if name1 == name2 {
+		t.Errorf("Expected different filenames for different data")
+	}
+
+	// 相同数据应生成相同文件名（如果 usedNames 不包含它）
+	usedNames2 := make(map[string]bool)
+	name1Again := generateImageFilename(data1, ".jpg", usedNames2)
+	if name1 != name1Again {
+		t.Errorf("Expected same filename for same data, got %q vs %q", name1, name1Again)
 	}
 }
 

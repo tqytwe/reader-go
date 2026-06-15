@@ -1393,4 +1393,3 @@ func debugBookSource(c *gin.Context) {
 	}
 }
 
-// DEBUGMARKER

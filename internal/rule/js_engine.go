@@ -6,10 +6,14 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +83,29 @@ type CacheExtensions interface {
 }
 
 // ============================================================================
+// 默认超时配置
+// ============================================================================
+
+// DefaultJSTimeout 默认 JS 执行超时时间
+// 通过 JS_TIMEOUT_MS 环境变量配置，默认 5000ms
+var DefaultJSTimeout time.Duration
+
+func init() {
+	DefaultJSTimeout = defaultJSTimeoutFromEnv()
+}
+
+// defaultJSTimeoutFromEnv 从环境变量 JS_TIMEOUT_MS 读取默认超时时间
+// 未设置或无效值时返回 5000ms
+func defaultJSTimeoutFromEnv() time.Duration {
+	if ms := os.Getenv("JS_TIMEOUT_MS"); ms != "" {
+		if n, err := strconv.Atoi(ms); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 5 * time.Second
+}
+
+// ============================================================================
 // JsEngine 结构体
 // ============================================================================
 
@@ -109,7 +136,22 @@ func NewJsEngine(opts *JsEngineOptions) *JsEngine {
 	}
 
 	runtime := goja.New()
-	ctx, cancel := context.WithCancel(context.Background())
+
+	// 设置超时：未显式指定时使用环境变量默认值
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = DefaultJSTimeout
+	}
+
+	// 使用 context.WithTimeout 作为引擎上下文
+	// sleep()、setTimeout() 等 Go 侧阻塞操作会随 context 取消而提前退出
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 
 	engine := &JsEngine{
 		runtime:   runtime,
@@ -124,14 +166,15 @@ func NewJsEngine(opts *JsEngineOptions) *JsEngine {
 		runtime.Set(k, v)
 	}
 
-	// 设置超时（使用 context 取消信号）
-	if opts.Timeout > 0 {
+	// 超时后中断 goja VM 执行
+	// context 超时取消 Go 侧阻塞操作（sleep 等），Interrupt 中断 JS 虚拟机
+	if timeout > 0 {
 		go func() {
 			select {
-			case <-time.After(opts.Timeout):
-				engine.runtime.Interrupt("execution timeout")
 			case <-ctx.Done():
-				engine.runtime.Interrupt("context cancelled")
+				if ctx.Err() == context.DeadlineExceeded {
+					runtime.Interrupt("execution timeout")
+				}
 			}
 		}()
 	}
@@ -213,7 +256,18 @@ func (e *JsEngine) registerExtensions(ext JsExtensions) {
 	e.RegisterJavaCompat()
 
 	// 同时提供便捷访问：直接暴露部分方法到全局
-	e.runtime.Set("ajax", extObj.Get("ajax"))
+	// 全局 ajax 返回 JSON 字符串（方便 Go 侧 val.String() 获取有意义的内容）
+	e.runtime.Set("ajax", func(url string) (string, error) {
+		result, err := ext.Ajax(url)
+		if err != nil {
+			return "", err
+		}
+		jsonBytes, jerr := jsonMarshal(result)
+		if jerr != nil {
+			return "", jerr
+		}
+		return string(jsonBytes), nil
+	})
 	e.runtime.Set("base64Encode", extObj.Get("base64Encode"))
 	e.runtime.Set("base64Decode", extObj.Get("base64Decode"))
 	e.runtime.Set("md5Encode", extObj.Get("md5Encode"))
@@ -266,7 +320,7 @@ func (e *JsEngine) registerBuiltins() {
 			case <-time.After(time.Duration(delayMs) * time.Millisecond):
 				_, err := fn(nil)
 				if err != nil {
-					// TODO: add logging
+					log.Printf("[JsEngine] setTimeout callback error: %v", err)
 				}
 			case <-e.ctx.Done():
 				return
@@ -349,14 +403,238 @@ func (e *JsEngine) RunEmbeddedJS(content string) (goja.Value, error) {
 		return e.runtime.ToValue(content), nil
 	}
 
-	// 拼接所有 JS 块并执行
-	var scripts []string
+	// 将每个 JS 块拆分为"声明部分"和"表达式部分"：
+	// - 声明部分（var/let/const/function）提升到外层作用域
+	// - 表达式部分用 IIFE 包装并返回值
+	// 多个块的表达式通过 + 连接（数值相加 / 字符串拼接）
+	var declParts []string
+	var exprParts []string
+
 	for _, m := range matches {
-		scripts = append(scripts, m[1])
+		block := strings.TrimSpace(m[1])
+		decl, expr := splitJSBlockDeclsAndExpr(block)
+		if decl != "" {
+			declParts = append(declParts, decl)
+		}
+		if expr != "" {
+			exprParts = append(exprParts, fmt.Sprintf("(function(){return (%s)})()", expr))
+		}
 	}
 
-	fullScript := strings.Join(scripts, ";\n")
+	// 组装最终脚本：先声明，再返回表达式组合
+	// 整个脚本包在 IIFE 中，使 return 合法
+	// 表达式之间用 + 连接（数值相加 / 字符串拼接，由 JS 运行时自动判断）
+	var scriptParts []string
+	if len(declParts) > 0 {
+		scriptParts = append(scriptParts, strings.Join(declParts, "\n"))
+	}
+	if len(exprParts) > 0 {
+		scriptParts = append(scriptParts, "return "+strings.Join(exprParts, "+"))
+	}
+
+	innerScript := strings.Join(scriptParts, "\n")
+	fullScript := "(function(){\n" + innerScript + "\n})()"
 	return e.runtime.RunString(fullScript)
+}
+
+// splitJSBlockDeclsAndExpr 将 JS 代码块拆分为声明部分和表达式部分
+// 声明部分包含 var/let/const/function 等顶层声明
+// 表达式部分是最后一个非声明语句（即代码块的"返回值"）
+func splitJSBlockDeclsAndExpr(code string) (decl string, expr string) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return "", ""
+	}
+
+	// 查找最后一个顶层分号
+	lastSemiIdx := findLastTopLevelSemicolon(code)
+
+	if lastSemiIdx >= 0 {
+		beforeSemi := code[:lastSemiIdx]
+		lastPart := strings.TrimSpace(code[lastSemiIdx+1:])
+
+		if lastPart != "" && !isJSDeclaration(lastPart) {
+			// 最后一部分是表达式，前面的是声明
+			declPart := strings.TrimRight(beforeSemi, " \t\r\n")
+			if !strings.HasSuffix(declPart, ";") {
+				declPart += ";"
+			}
+			return declPart, lastPart
+		}
+
+		// 最后一部分也是声明或为空 — 全部作为声明
+		return code, ""
+	}
+
+	// 没有顶层分号。检查是否以声明关键字开头
+	if !isJSDeclaration(code) {
+		// 不是声明 — 整个代码块是表达式
+		return "", code
+	}
+
+	// 以声明开头但没有顶层分号。
+	// 可能是 function decl { ... } expr（函数声明后紧跟表达式）
+	// 需要找到声明体的结束位置（花括号归零处）
+	declEnd := findDeclEnd(code)
+	if declEnd >= 0 && declEnd < len(code) {
+		declPart := strings.TrimSpace(code[:declEnd])
+		exprPart := strings.TrimSpace(code[declEnd:])
+		if exprPart != "" && !isJSDeclaration(exprPart) {
+			if !strings.HasSuffix(declPart, ";") {
+				declPart += ";"
+			}
+			return declPart, exprPart
+		}
+	}
+
+	// 整个代码块都是声明
+	return code, ""
+}
+
+// findDeclEnd 查找声明语句的结束位置
+// 处理 function ... { ... } 和 var x = expr 等情况
+// 返回声明结束后的位置（即下一个语句的起始位置）
+func findDeclEnd(code string) int {
+	code = strings.TrimSpace(code)
+
+	// 找到第一个 { 的位置（声明体的开始）
+	braceStart := -1
+	for i := 0; i < len(code); i++ {
+		ch := code[i]
+		if ch == '{' {
+			braceStart = i
+			break
+		}
+		// 如果遇到分号，说明声明没有花括号体（如 var x = 5;）
+		if ch == ';' {
+			return i + 1
+		}
+	}
+
+	if braceStart < 0 {
+		return -1
+	}
+
+	// 从花括号开始，找到匹配的结束花括号
+	depth := 0
+	inString := false
+	stringChar := byte(0)
+	escapeNext := false
+
+	for i := braceStart; i < len(code); i++ {
+		ch := code[i]
+
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+
+		if inString {
+			if ch == '\\' {
+				escapeNext = true
+			} else if ch == stringChar {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' || ch == '\'' || ch == '`' {
+			inString = true
+			stringChar = ch
+			continue
+		}
+
+		if ch == '{' {
+			depth++
+		} else if ch == '}' {
+			depth--
+			if depth == 0 {
+				// 花括号归零 — 声明体结束
+				return i + 1
+			}
+		}
+	}
+
+	return -1
+}
+
+// isJSDeclaration 判断代码片段是否以 JS 声明关键字开头
+func isJSDeclaration(code string) bool {
+	code = strings.TrimSpace(code)
+	keywords := []string{"var ", "let ", "const ", "function ", "class ", "import ", "export "}
+	for _, kw := range keywords {
+		if strings.HasPrefix(code, kw) {
+			return true
+		}
+	}
+	// 处理 function 后直接跟 ( 的情况（匿名函数声明）
+	if strings.HasPrefix(code, "function(") || strings.HasPrefix(code, "function*") {
+		return true
+	}
+	return false
+}
+
+// findLastTopLevelSemicolon 查找最后一个顶层分号的位置
+// 忽略 {}、()、[] 以及字符串内部的分号
+func findLastTopLevelSemicolon(code string) int {
+	lastIdx := -1
+	braceDepth := 0
+	parenDepth := 0
+	bracketDepth := 0
+	inString := false
+	stringChar := byte(0)
+	escapeNext := false
+
+	for i := 0; i < len(code); i++ {
+		ch := code[i]
+
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+
+		if inString {
+			if ch == '\\' {
+				escapeNext = true
+			} else if ch == stringChar {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' || ch == '\'' || ch == '`' {
+			inString = true
+			stringChar = ch
+			continue
+		}
+
+		switch ch {
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case ';':
+			if braceDepth == 0 && parenDepth == 0 && bracketDepth == 0 {
+				lastIdx = i
+			}
+		}
+	}
+
+	return lastIdx
 }
 
 // EvaluateExpression 计算 {{expression}} 中的表达式
@@ -446,7 +724,8 @@ func findTemplateExpressions(template string) []string {
 	i := 0
 	for i < len(template)-1 {
 		if template[i] == '{' && template[i+1] == '{' {
-			depth := 1
+			// depth starts at 2 because we need to match TWO closing braces (}})
+			depth := 2
 			start := i + 2
 			j := i + 2
 			for j < len(template) && depth > 0 {
@@ -489,13 +768,43 @@ func (e *JsEngine) SetVariable(name string, value interface{}) {
 	e.runtime.Set(name, value)
 }
 
+// normalizeValue 将 Go 整型统一转为 float64，与 JS 的 number 类型保持一致
+func normalizeValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case int:
+		return float64(val)
+	case int8:
+		return float64(val)
+	case int16:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case uint:
+		return float64(val)
+	case uint8:
+		return float64(val)
+	case uint16:
+		return float64(val)
+	case uint32:
+		return float64(val)
+	case uint64:
+		return float64(val)
+	case float32:
+		return float64(val)
+	default:
+		return v
+	}
+}
+
 // GetVariable 获取变量
 func (e *JsEngine) GetVariable(name string) interface{} {
 	e.variableMu.RLock()
 	defer e.variableMu.RUnlock()
 
 	if v, ok := e.variables[name]; ok {
-		return v
+		return normalizeValue(v)
 	}
 	val := e.runtime.Get(name)
 	if val != nil && !goja.IsUndefined(val) {
@@ -518,7 +827,7 @@ func (e *JsEngine) GetVariables() map[string]interface{} {
 
 	result := make(map[string]interface{})
 	for k, v := range e.variables {
-		result[k] = v
+		result[k] = normalizeValue(v)
 	}
 	return result
 }
@@ -528,6 +837,7 @@ func (e *JsEngine) GetVariables() map[string]interface{} {
 // ============================================================================
 
 // Close 关闭引擎，释放资源
+// cancel() 会停止 context.WithTimeout 的内部定时器，防止 goroutine 泄漏
 func (e *JsEngine) Close() {
 	if e == nil {
 		return
@@ -696,6 +1006,11 @@ func headersToMap(header http.Header) map[string]interface{} {
 		result[k] = strings.Join(v, ", ")
 	}
 	return result
+}
+
+// jsonMarshal 将 Go 值序列化为 JSON 字节切片
+func jsonMarshal(v interface{}) ([]byte, error) {
+	return json.Marshal(v)
 }
 
 func exportValue(val goja.Value) interface{} {

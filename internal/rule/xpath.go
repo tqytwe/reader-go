@@ -44,7 +44,6 @@ func (p *XPathParser) ParseXPath(query string, doc *xmlquery.Node) ([]string, er
 
 	// Step 2: Execute each XPath expression and combine results
 	var results []string
-	var opIdx int
 
 	for i, seg := range result.Segments {
 		expr := strings.TrimSpace(seg.Selector)
@@ -52,20 +51,29 @@ func (p *XPathParser) ParseXPath(query string, doc *xmlquery.Node) ([]string, er
 			continue
 		}
 
-		matches, err := p.execXPath(expr, doc)
-		if err != nil {
-			return nil, fmt.Errorf("xpath query '%s' failed: %w", expr, err)
-		}
-
 		if i == 0 {
-			// First expression, just collect results
+			// First segment is always executed as XPath
+			matches, err := p.execXPath(expr, doc)
+			if err != nil {
+				return nil, fmt.Errorf("xpath query '%s' failed: %w", expr, err)
+			}
 			results = append(results, matches...)
-		} else if opIdx < len(result.Operators) {
-			op := ParseOperatorType(result.Operators[opIdx])
-			results = p.combineResults(results, matches, op)
-			opIdx++
 		} else {
-			results = append(results, matches...)
+			// Determine the operator preceding this segment
+			op := ParseOperatorType(result.Operators[i-1])
+
+			var matches []string
+			if op == OpCross {
+				// %% operator: right side is literal text for filtering, not an XPath expression
+				matches = []string{expr}
+			} else {
+				var err error
+				matches, err = p.execXPath(expr, doc)
+				if err != nil {
+					return nil, fmt.Errorf("xpath query '%s' failed: %w", expr, err)
+				}
+			}
+			results = p.combineResults(results, matches, op)
 		}
 	}
 
@@ -73,8 +81,14 @@ func (p *XPathParser) ParseXPath(query string, doc *xmlquery.Node) ([]string, er
 }
 
 // ParseHTML parses an HTML string into an xmlquery.Document.
+// Uses ParseWithOptions with AutoClose for HTML void elements (meta, br, etc.)
+// since xmlquery.Parse is strict XML and fails on self-closing HTML tags.
 func (p *XPathParser) ParseHTML(htmlStr string) (*xmlquery.Node, error) {
-	doc, err := xmlquery.Parse(strings.NewReader(htmlStr))
+	doc, err := xmlquery.ParseWithOptions(strings.NewReader(htmlStr), xmlquery.ParserOptions{
+		Decoder: &xmlquery.DecoderOptions{
+			AutoClose: []string{"meta", "br", "hr", "img", "input", "link", "area", "base", "col", "embed", "source", "track", "wbr"},
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("parse html failed: %w", err)
 	}

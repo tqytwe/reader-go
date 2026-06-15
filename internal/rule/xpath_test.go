@@ -33,12 +33,12 @@ func testHTMLDoc() string {
             <a class="chapter" href="/chap/2">第二章 启程</a>
             <a class="chapter" href="/chap/3">第三章 相遇</a>
         </div>
-        <article class="content">
+        <div class="content">
             <p>这是正文第一段。</p>
             <p>这是正文第二段。</p>
             <div class="ad">广告内容</div>
             <p>这是正文第三段。</p>
-        </article>
+        </div>
     </main>
     <footer>
         <p>© 2024 书源网站</p>
@@ -69,7 +69,13 @@ func testHTML2() string {
 }
 
 func parseTestHTML(t *testing.T, htmlStr string) *xmlquery.Node {
-	doc, err := xmlquery.Parse(strings.NewReader(htmlStr))
+	// Use ParseWithOptions with AutoClose for HTML void elements
+	// xmlquery.Parse is strict XML and fails on self-closing HTML tags like <meta>
+	doc, err := xmlquery.ParseWithOptions(strings.NewReader(htmlStr), xmlquery.ParserOptions{
+		Decoder: &xmlquery.DecoderOptions{
+			AutoClose: []string{"meta", "br", "hr", "img", "input", "link", "area", "base", "col", "embed", "source", "track", "wbr"},
+		},
+	})
 	require.NoError(t, err)
 	return doc
 }

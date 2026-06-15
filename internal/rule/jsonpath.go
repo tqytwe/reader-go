@@ -3,6 +3,7 @@ package rule
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -86,19 +87,25 @@ func (p *JSONPathParser) execJSONPath(path string, jsonStr string) ([]string, er
 		return nil, fmt.Errorf("invalid JSON")
 	}
 
-	// 确保路径以 $ 开头
-	if !strings.HasPrefix(path, "$") {
-		path = "$" + path
+	// 将 JSONPath 语法转换为 gjson 语法
+	gjsonPath, hasSlice, sliceStart, sliceEnd, sliceBasePath, sliceSuffix := convertToGjsonPath(path)
+
+	// 如果包含数组切片，需要特殊处理
+	if hasSlice {
+		return p.execSliceQuery(jsonStr, sliceBasePath, sliceStart, sliceEnd, sliceSuffix)
 	}
 
 	var results []string
 
 	// 使用 gjson 执行查询
-	result := gjson.Get(jsonStr, path)
+	result := gjson.Get(jsonStr, gjsonPath)
 
 	if !result.Exists() {
 		return nil, nil
 	}
+
+	// 是否是根查询（$ 或 @this）— 根查询需要展开对象/数组的所有值
+	isRootQuery := gjsonPath == "@this"
 
 	// 根据结果类型处理
 	switch result.Type {
@@ -110,21 +117,183 @@ func (p *JSONPathParser) execJSONPath(path string, jsonStr string) ([]string, er
 		results = append(results, "true")
 	case gjson.False:
 		results = append(results, "false")
+	case gjson.Null:
+		results = append(results, "null")
 	case gjson.JSON:
-		// 数组或对象 — 需要遍历
 		if result.IsArray() {
-			result.ForEach(func(key, value gjson.Result) bool {
-				results = append(results, p.extractValue(value))
-				return true
-			})
-		} else if result.IsObject() {
-			// 对象 — 遍历所有字段值
+			// 数组 — 遍历元素，递归展平嵌套数组
+			p.flattenArray(result, &results)
+		} else if isRootQuery {
+			// 根对象查询 — 展开所有字段值
 			result.ForEach(func(key, value gjson.Result) bool {
 				results = append(results, p.extractValue(value))
 				return true
 			})
 		} else {
-			results = append(results, result.Raw)
+			// 普通对象 — 返回紧凑 JSON
+			results = append(results, compactJSON(result.Raw))
+		}
+	}
+
+	return results, nil
+}
+
+// convertToGjsonPath 将 JSONPath 语法转换为 gjson 语法
+// 返回: gjson路径, 是否含切片, 切片起始, 切片结束, 切片前路径, 切片后路径
+func convertToGjsonPath(path string) (gjsonPath string, hasSlice bool, sliceStart, sliceEnd int, sliceBasePath, sliceSuffix string) {
+	// 先去掉 $ 前缀
+	clean := path
+	if strings.HasPrefix(clean, "$.") {
+		clean = clean[2:]
+	} else if clean == "$" {
+		return "@this", false, 0, 0, "", ""
+	} else if strings.HasPrefix(clean, "$[") {
+		clean = clean[1:]
+	}
+
+	// 扫描路径，转换 [...] 语法
+	var result strings.Builder
+	i := 0
+	for i < len(clean) {
+		if clean[i] == '[' {
+			// 找到匹配的 ]
+			j := i + 1
+			depth := 1
+			for j < len(clean) && depth > 0 {
+				if clean[j] == '[' {
+					depth++
+				} else if clean[j] == ']' {
+					depth--
+				}
+				j++
+			}
+			bracketContent := clean[i+1 : j-1]
+
+			// 检查是否是切片语法 [N:M] 或 [N:]
+			if colonIdx := strings.Index(bracketContent, ":"); colonIdx >= 0 {
+				// 切片语法
+				startStr := strings.TrimSpace(bracketContent[:colonIdx])
+				endStr := strings.TrimSpace(bracketContent[colonIdx+1:])
+
+				sStart := 0
+				sEnd := -1 // -1 表示到末尾
+
+				if startStr != "" {
+					if v, err := strconv.Atoi(startStr); err == nil {
+						sStart = v
+					}
+				}
+				if endStr != "" {
+					if v, err := strconv.Atoi(endStr); err == nil {
+						sEnd = v
+					}
+				}
+
+				// 收集切片前的路径
+				basePath := result.String()
+				// 去掉末尾的 .
+				basePath = strings.TrimRight(basePath, ".")
+
+				// 收集切片后的路径
+				suffix := ""
+				if j < len(clean) {
+					suffix = clean[j:]
+					// 去掉开头的 .
+					suffix = strings.TrimLeft(suffix, ".")
+				}
+
+				return "", true, sStart, sEnd, basePath, suffix
+			}
+
+			// [*] 通配符
+			if bracketContent == "*" {
+				// 如果 [*] 在路径末尾（后面没有更多内容），直接省略
+				// gjson 会返回整个数组，遍历即可
+				if j >= len(clean) {
+					// 末尾 [*] — 省略
+					i = j
+					continue
+				}
+				// 中间 [*] → .# (通配符，用于访问数组元素属性)
+				result.WriteString(".#")
+				i = j
+				continue
+			}
+
+			// [N] → .N (数组索引)
+			if v, err := strconv.Atoi(bracketContent); err == nil {
+				result.WriteString(fmt.Sprintf(".%d", v))
+				i = j
+				continue
+			}
+
+			// 其他 [...] 保持原样（gjson 的条件语法等）
+			result.WriteString(".")
+			result.WriteString(bracketContent)
+			i = j
+			continue
+		}
+
+		result.WriteByte(clean[i])
+		i++
+	}
+
+	r := result.String()
+	if r == "" {
+		// 空路径（如 $[*] 去掉 [*] 后）→ 返回根元素
+		return "@this", false, 0, 0, "", ""
+	}
+	return r, false, 0, 0, "", ""
+}
+
+// execSliceQuery 处理包含数组切片的查询
+func (p *JSONPathParser) execSliceQuery(jsonStr string, basePath string, start, end int, suffix string) ([]string, error) {
+	// 获取基础数组
+	arrayResult := gjson.Get(jsonStr, basePath)
+	if !arrayResult.Exists() || !arrayResult.IsArray() {
+		return nil, nil
+	}
+
+	// 将数组元素收集到切片
+	var items []gjson.Result
+	arrayResult.ForEach(func(key, value gjson.Result) bool {
+		items = append(items, value)
+		return true
+	})
+
+	// 应用切片
+	total := len(items)
+	if start < 0 {
+		start = 0
+	}
+	if end < 0 || end > total {
+		end = total
+	}
+	if start >= total || start >= end {
+		return nil, nil
+	}
+	sliced := items[start:end]
+
+	// 对切片后的每个元素应用后缀路径
+	var results []string
+	for _, item := range sliced {
+		if suffix == "" {
+			results = append(results, p.extractValue(item))
+		} else {
+			// 在子元素上执行后缀查询
+			subResult := gjson.Parse(item.Raw)
+			subQuery := gjson.Get(item.Raw, suffix)
+			if subQuery.Exists() {
+				if subQuery.IsArray() {
+					subQuery.ForEach(func(key, value gjson.Result) bool {
+						results = append(results, p.extractValue(value))
+						return true
+					})
+				} else {
+					results = append(results, p.extractValue(subQuery))
+				}
+			}
+			_ = subResult
 		}
 	}
 
@@ -142,14 +311,72 @@ func (p *JSONPathParser) extractValue(result gjson.Result) string {
 		return "true"
 	case gjson.False:
 		return "false"
+	case gjson.Null:
+		return "null"
 	case gjson.JSON:
 		if result.IsArray() || result.IsObject() {
-			return result.Raw
+			return compactJSON(result.Raw)
 		}
 		return result.String()
 	default:
 		return ""
 	}
+}
+
+// flattenArray 递归展平嵌套数组，将所有叶子值添加到 results
+// 例如 [["A","B"],["C"]] → ["A","B","C"]
+func (p *JSONPathParser) flattenArray(result gjson.Result, results *[]string) {
+	result.ForEach(func(key, value gjson.Result) bool {
+		if value.IsArray() {
+			// 递归展平子数组
+			p.flattenArray(value, results)
+		} else {
+			*results = append(*results, p.extractValue(value))
+		}
+		return true
+	})
+}
+
+// compactJSON 将 JSON 文本压缩为紧凑格式（去除所有多余空白）
+func compactJSON(raw string) string {
+	var buf strings.Builder
+	inString := false
+	escapeNext := false
+
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+
+		if escapeNext {
+			buf.WriteByte(ch)
+			escapeNext = false
+			continue
+		}
+
+		if inString {
+			buf.WriteByte(ch)
+			if ch == '\\' {
+				escapeNext = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = true
+			buf.WriteByte(ch)
+			continue
+		}
+
+		// 跳过所有空白字符
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			continue
+		}
+
+		buf.WriteByte(ch)
+	}
+
+	return buf.String()
 }
 
 // combineResults 根据操作符合并两个结果集
@@ -233,10 +460,16 @@ func (p *JSONPathParser) ParseJSON(jsonStr string) (gjson.Result, error) {
 	return gjson.Parse(jsonStr), nil
 }
 
-// Query 便捷函数：直接对 JSON 字符串执行 JSONPath 查询
-func Query(jsonStr, jsonPathExpr string) ([]string, error) {
+// Query 统一查询函数：自动检测输入数据类型，支持 JSON 和 HTML/XML
+// 当表达式以 / 或 // 开头时，使用 XPath 解析；否则使用 JSONPath 解析
+func Query(data, expression string) ([]string, error) {
+	// Auto-detect: if expression looks like XPath, use XPath parser
+	if strings.HasPrefix(expression, "/") || strings.HasPrefix(expression, "//") {
+		return QueryXPath(data, expression)
+	}
+	// Default to JSONPath
 	parser := NewJSONPathParser()
-	return parser.ParseJSONPath(jsonPathExpr, jsonStr)
+	return parser.ParseJSONPath(expression, data)
 }
 
 // QueryFirst 返回第一个匹配值（或空字符串）

@@ -14,9 +14,10 @@ type Executor struct {
 }
 
 // NewExecutor 创建执行器
+// JS 引擎使用 DefaultJSTimeout（由 JS_TIMEOUT_MS 环境变量配置，默认 5s）
 func NewExecutor() *Executor {
 	return &Executor{
-		js: NewJsEngine(&JsEngineOptions{Timeout: 0}),
+		js: NewJsEngine(&JsEngineOptions{}),
 	}
 }
 

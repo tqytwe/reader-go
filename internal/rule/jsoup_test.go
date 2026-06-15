@@ -443,7 +443,7 @@ func TestParseCSS_ErrorHandling(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var d *goquery.Document
-			if tt.selector != "" {
+			if tt.name != "nil document" {
 				d = doc
 			}
 			_, err := ParseCSS(tt.selector, d)
@@ -530,7 +530,7 @@ func TestParseCSS_RealWorldBookSource(t *testing.T) {
 		{
 			name:     "链式组合: 书名 && 作者",
 			selector: ".book-item .book-name a@text && .book-item .author@text",
-			want:     []string{"诡秘之主", "猫腻", "间客", "猫腻", "庆余年", "猫腻"},
+			want:     []string{"诡秘之主", "爱潜水的乌贼", "间客", "猫腻", "庆余年", "猫腻"},
 		},
 		{
 			name:     "提取 book-item 的 data-id",

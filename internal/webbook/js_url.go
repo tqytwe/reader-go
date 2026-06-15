@@ -5,27 +5,18 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
-	"time"
 
 	"reader-go/internal/rule"
 	"reader-go/internal/utils"
 )
 
 // evalJSURL 执行 @js: URL 模板，返回 URL 字符串
+// 超时由 JsEngine 内部通过 JS_TIMEOUT_MS 环境变量控制（默认 5s）
 func (wb *WebBook) evalJSURL(source *BookSource, script string, vars map[string]string) (string, error) {
 	script = strings.TrimPrefix(strings.TrimSpace(script), "@js:")
 	if script == "" {
 		return "", fmt.Errorf("empty js url script")
-	}
-
-	timeout := 5 * time.Second
-	if ms := os.Getenv("JS_TIMEOUT_MS"); ms != "" {
-		if n, err := strconv.Atoi(ms); err == nil && n > 0 {
-			timeout = time.Duration(n) * time.Millisecond
-		}
 	}
 
 	ext := newWebbookJSExtensions(wb, source)
@@ -34,7 +25,6 @@ func (wb *WebBook) evalJSURL(source *BookSource, script string, vars map[string]
 		jsVars[k] = v
 	}
 	engine := rule.NewJsEngine(&rule.JsEngineOptions{
-		Timeout:    timeout,
 		Variables:  jsVars,
 		Extensions: ext,
 	})

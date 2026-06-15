@@ -63,6 +63,8 @@ type RegexStep struct {
 	ReplacePatterns []ReplacePattern
 	// GroupRefs $1, $2 等分组引用
 	GroupRefs []int
+	// GroupRefsTemplate 分组引用模板（如 "$1-$2"），用于替换 $N 为分组值
+	GroupRefsTemplate string
 }
 
 // RegexMatch 单次正则匹配结果
@@ -79,6 +81,8 @@ type MatchResult struct {
 	Group0 string
 	// Groups 命名/索引分组 (1-based)
 	Groups map[int]string
+	// NumGroups 正则表达式的捕获分组数量（不含 group 0）
+	NumGroups int
 }
 
 // ParseRegex 解析并执行正则规则
@@ -139,36 +143,81 @@ func (p *RegexParser) parseChain(result *ParseResult) (*RegexChain, error) {
 			Flags: p.flags,
 		}
 
-		// 解析模式：默认模式也作为正则处理
-		switch seg.Mode {
-		case ModeRegex, ModeDefault:
-			step.Pattern = seg.Selector
-		default:
-			step.Pattern = seg.Selector
-		}
-
-		// 解析内嵌语法（从原始内容中提取）
+		// 使用原始文本进行解析（Raw 包含完整的段内容）
 		raw := seg.Raw
 		if raw == "" {
 			raw = seg.Selector
 		}
 
-		// 1. 分组引用 $1 $2 ...
+		// 1. 解析分组引用 $1 $2 ...
 		groupRefs := parseGroupRefs(raw)
 		for _, ref := range groupRefs {
 			step.GroupRefs = append(step.GroupRefs, ref.GroupIndex)
 		}
 
-		// 2. 替换语法 ##find##replace
+		// 2. 解析替换语法 ##find##replace
 		replacePatterns := parseReplacePatterns(raw)
 		for _, rp := range replacePatterns {
 			step.ReplacePatterns = append(step.ReplacePatterns, rp)
 		}
 
+		// 3. 从原始文本中提取纯正则模式和分组引用模板
+		pattern, groupTemplate := extractRegexPatternAndTemplate(raw)
+		step.Pattern = preprocessRegexPattern(pattern)
+		step.GroupRefsTemplate = groupTemplate
+
 		chain.Steps = append(chain.Steps, step)
 	}
 
 	return chain, nil
+}
+
+// extractRegexPatternAndTemplate 从原始规则文本中提取纯正则表达式和分组引用模板
+// 规则格式：pattern[template][$N...][##find##replace...]
+// - pattern: 第一个 $N 或 ## 之前的部分
+// - template: $N 引用和分隔符组成的模板（如 "$1-$2"），到 ## 或字符串结尾
+func extractRegexPatternAndTemplate(raw string) (pattern string, groupTemplate string) {
+	// 找到第一个 $N 或 ## 的位置
+	re := regexp.MustCompile(`(\$\d+|##)`)
+	loc := re.FindStringIndex(raw)
+	if loc == nil {
+		return strings.TrimSpace(raw), ""
+	}
+
+	pattern = strings.TrimSpace(raw[:loc[0]])
+	rest := raw[loc[0]:]
+
+	// 如果第一个匹配是 ##（没有分组引用），模板为空
+	if strings.HasPrefix(rest, "##") {
+		return pattern, ""
+	}
+
+	// 否则，从第一个 $N 开始到 ## 或字符串结尾是分组引用模板
+	if hashIdx := strings.Index(rest, "##"); hashIdx != -1 {
+		groupTemplate = strings.TrimSpace(rest[:hashIdx])
+	} else {
+		groupTemplate = strings.TrimSpace(rest)
+	}
+
+	return pattern, groupTemplate
+}
+
+// preprocessRegexPattern 预处理正则表达式
+// Legado 约定：\\ 表示字面量反斜杠（转换为 regexp2 可识别的 \）
+func preprocessRegexPattern(pattern string) string {
+	if !strings.Contains(pattern, `\\`) {
+		return pattern
+	}
+	var sb strings.Builder
+	for i := 0; i < len(pattern); i++ {
+		if i+1 < len(pattern) && pattern[i] == '\\' && pattern[i+1] == '\\' {
+			sb.WriteByte('\\')
+			i++ // 跳过第二个反斜杠
+		} else {
+			sb.WriteByte(pattern[i])
+		}
+	}
+	return sb.String()
 }
 
 // executeChain 执行链式正则匹配
@@ -178,10 +227,27 @@ func (p *RegexParser) executeChain(chain *RegexChain, input string) ([]string, e
 	}
 
 	currentInput := input
-	var finalResults []string
+	isMultiStep := len(chain.Steps) > 1
 
 	for i, step := range chain.Steps {
 		isLast := i == len(chain.Steps)-1
+
+		// 纯替换步骤（没有正则模式，只有 ##find##replace）
+		if step.Pattern == "" && len(step.ReplacePatterns) > 0 {
+			result := currentInput
+			for _, rp := range step.ReplacePatterns {
+				re, err := regexp2.Compile(rp.Find, step.Flags)
+				if err != nil {
+					continue
+				}
+				result, _ = re.Replace(result, rp.Replace, 0, -1)
+			}
+			if isLast {
+				return []string{result}, nil
+			}
+			currentInput = result
+			continue
+		}
 
 		// 编译正则
 		re, err := regexp2.Compile(step.Pattern, step.Flags)
@@ -196,50 +262,49 @@ func (p *RegexParser) executeChain(chain *RegexChain, input string) ([]string, e
 		}
 
 		if len(matches) == 0 {
-			// 中间步骤无匹配，整个链失败
 			if !isLast {
 				return nil, fmt.Errorf("step %d: no match for %q", i, step.Pattern)
 			}
-			// 最后一步无匹配，返回空结果
 			return []string{}, nil
 		}
 
-		// 处理分组引用和替换
-		if len(step.GroupRefs) > 0 || len(step.ReplacePatterns) > 0 {
-			// 应用分组引用和替换后作为最终结果
-			finalResults = p.applyPostProcessing(matches, step)
-		} else if isLast {
-			// 最后一步，直接返回 group(0)
-			finalResults = make([]string, len(matches))
-			for j, m := range matches {
-				finalResults[j] = m.Group0
+		// 最后一步：处理结果
+		if isLast {
+			if len(step.GroupRefs) > 0 || len(step.ReplacePatterns) > 0 {
+				// 有后处理（分组引用或替换）：只处理第一个匹配
+				return p.applyPostProcessing(matches, step), nil
 			}
+			// 无后处理
+			if isMultiStep {
+				// 多步链：只返回第一个匹配
+				return []string{matches[0].Group0}, nil
+			}
+			// 单步模式：如果恰好有 1 个捕获分组且分组未被量化，自动提取该分组
+			if matches[0].NumGroups == 1 && !isPatternGroupQuantified(step.Pattern) {
+				results := make([]string, len(matches))
+				for j, m := range matches {
+					if val, ok := m.Groups[1]; ok {
+						results[j] = val
+					} else {
+						results[j] = m.Group0
+					}
+				}
+				return results, nil
+			}
+			// 否则返回所有匹配的 group(0)
+			results := make([]string, len(matches))
+			for j, m := range matches {
+				results[j] = m.Group0
+			}
+			return results, nil
 		}
 
-		// 如果不是最后一步，用第一个匹配的 group(0) 作为下一步的输入
-		if !isLast && len(matches) > 0 {
-			currentInput = matches[0].Group0
-		}
+		// 中间步骤：用第一个匹配的 group(0) 作为下一步的输入
+		currentInput = matches[0].Group0
 	}
 
-	// 兜底：如果没有 finalResults，返回最后一步的所有 group(0)
-	if len(finalResults) == 0 && len(chain.Steps) > 0 {
-		lastStep := chain.Steps[len(chain.Steps)-1]
-		lastRe, err := regexp2.Compile(lastStep.Pattern, lastStep.Flags)
-		if err != nil {
-			return nil, err
-		}
-		lastMatches, err := p.execMatch(lastRe, currentInput)
-		if err != nil {
-			return nil, err
-		}
-		finalResults = make([]string, len(lastMatches))
-		for j, m := range lastMatches {
-			finalResults[j] = m.Group0
-		}
-	}
-
-	return finalResults, nil
+	// 兜底：返回最后输入的文本（用于纯替换链的边界情况）
+	return []string{currentInput}, nil
 }
 
 // execMatch 执行单次正则匹配，返回所有匹配结果
@@ -258,6 +323,7 @@ func (p *RegexParser) execMatch(re *regexp2.Regexp, input string) ([]MatchResult
 		}
 
 		groups := m.Groups()
+		result.NumGroups = len(groups) - 1 // 不含 group 0
 		for i := 1; i < len(groups); i++ {
 			g := groups[i]
 			if len(g.Captures) > 0 {
@@ -277,6 +343,7 @@ func (p *RegexParser) execMatch(re *regexp2.Regexp, input string) ([]MatchResult
 }
 
 // applyPostProcessing 应用分组引用和替换语法
+// 只处理第一个匹配结果
 func (p *RegexParser) applyPostProcessing(matches []MatchResult, step RegexStep) []string {
 	if len(matches) == 0 {
 		return nil
@@ -284,20 +351,49 @@ func (p *RegexParser) applyPostProcessing(matches []MatchResult, step RegexStep)
 
 	base := matches[0]
 
-	// 只有分组引用：按顺序拼接
-	if len(step.GroupRefs) > 0 && len(step.ReplacePatterns) == 0 {
-		var sb strings.Builder
-		for _, refIdx := range step.GroupRefs {
-			if val, ok := base.Groups[refIdx]; ok {
-				sb.WriteString(val)
-			} else if refIdx == 0 {
-				sb.WriteString(base.Group0)
+	// 1. 分组引用：使用模板替换 $N 为分组值
+	if len(step.GroupRefs) > 0 {
+		var result string
+		if step.GroupRefsTemplate != "" {
+			// 使用模板：将 $N 替换为对应分组值
+			result = step.GroupRefsTemplate
+			// 按索引降序替换，避免 $1 替换影响 $10 等
+			for i := len(step.GroupRefs) - 1; i >= 0; i-- {
+				refIdx := step.GroupRefs[i]
+				refStr := fmt.Sprintf("$%d", refIdx)
+				var val string
+				if refIdx == 0 {
+					val = base.Group0
+				} else if v, ok := base.Groups[refIdx]; ok {
+					val = v
+				}
+				result = strings.ReplaceAll(result, refStr, val)
 			}
+		} else {
+			// 无模板，按顺序拼接分组值
+			var sb strings.Builder
+			for _, refIdx := range step.GroupRefs {
+				if refIdx == 0 {
+					sb.WriteString(base.Group0)
+				} else if val, ok := base.Groups[refIdx]; ok {
+					sb.WriteString(val)
+				}
+			}
+			result = sb.String()
 		}
-		return []string{sb.String()}
+
+		// 如果同时有替换语法，在分组引用结果上再应用替换
+		for _, rp := range step.ReplacePatterns {
+			re, err := regexp2.Compile(rp.Find, step.Flags)
+			if err != nil {
+				continue
+			}
+			result, _ = re.Replace(result, rp.Replace, 0, -1)
+		}
+		return []string{result}
 	}
 
-	// 有替换语法：在 group(0) 上依次应用替换
+	// 2. 只有替换语法：在 group(0) 上依次应用替换
 	result := base.Group0
 	for _, rp := range step.ReplacePatterns {
 		re, err := regexp2.Compile(rp.Find, step.Flags)
@@ -305,29 +401,6 @@ func (p *RegexParser) applyPostProcessing(matches []MatchResult, step RegexStep)
 			continue
 		}
 		result, _ = re.Replace(result, rp.Replace, 0, -1)
-	}
-
-	// 如果还有分组引用，在替换后的结果上再应用
-	if len(step.GroupRefs) > 0 {
-		// 重新对原始匹配做分组引用
-		var sb strings.Builder
-		for _, refIdx := range step.GroupRefs {
-			if val, ok := base.Groups[refIdx]; ok {
-				sb.WriteString(val)
-			} else if refIdx == 0 {
-				sb.WriteString(base.Group0)
-			}
-		}
-		// 对分组引用结果再做替换
-		final := sb.String()
-		for _, rp := range step.ReplacePatterns {
-			re, err := regexp2.Compile(rp.Find, step.Flags)
-			if err != nil {
-				continue
-			}
-			final, _ = re.Replace(final, rp.Replace, 0, -1)
-		}
-		return []string{final}
 	}
 
 	return []string{result}
@@ -429,3 +502,45 @@ func ExtractGroups(pattern string, input string) ([]map[int]string, error) {
 
 // parseGroupRefs 解析 $1 $2 等分组引用（与 segment.go 共用）
 // parseReplacePatterns 解析 ##find##replace 替换语法（与 segment.go 共用）
+
+// isPatternGroupQuantified 检查正则模式中最后一个捕获分组是否被量化
+// 例如: (\d)+ → true（分组后紧跟 +），([^/]+)/? → false（分组后跟 /）
+func isPatternGroupQuantified(pattern string) bool {
+	// 从右向左扫描，找到最后一个不在字符类 [...] 内的 ')'
+	depth := 0
+	inCharClass := false
+	lastCloseParenIdx := -1
+
+	for i := len(pattern) - 1; i >= 0; i-- {
+		ch := pattern[i]
+		if ch == ']' && !inCharClass {
+			inCharClass = true
+			continue
+		}
+		if ch == '[' && inCharClass {
+			inCharClass = false
+			continue
+		}
+		if inCharClass {
+			continue
+		}
+		if ch == ')' {
+			if depth == 0 {
+				lastCloseParenIdx = i
+				break
+			}
+			depth++
+		}
+		if ch == '(' {
+			depth--
+		}
+	}
+
+	if lastCloseParenIdx == -1 || lastCloseParenIdx >= len(pattern)-1 {
+		return false // 没有闭合括号或它在末尾
+	}
+
+	// 检查 ')' 后面的第一个非空白字符
+	nextCh := pattern[lastCloseParenIdx+1]
+	return nextCh == '+' || nextCh == '*' || nextCh == '?' || nextCh == '{'
+}

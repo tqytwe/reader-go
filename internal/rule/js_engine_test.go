@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -521,7 +522,7 @@ func TestJsExtensions_Md5(t *testing.T) {
 	t.Run("md5Encode chinese", func(t *testing.T) {
 		val, err := engine.RunString(`md5Encode("你好")`)
 		require.NoError(t, err)
-		assert.Equal(t, "7eca68990d3381ce9049c66d2266f0a4", val.String())
+		assert.Equal(t, "7eca689f0d3389d9dea66ae112e5cfd7", val.String())
 	})
 
 	t.Run("ext.md5Encode available", func(t *testing.T) {
@@ -768,6 +769,96 @@ func TestCustomExtensions(t *testing.T) {
 		val, err := engine.RunString(`md5Encode("test")`)
 		require.NoError(t, err)
 		assert.Contains(t, val.String(), "custom-")
+	})
+}
+
+// ============================================================================
+// 超时控制测试
+// ============================================================================
+
+func TestJsEngine_Timeout(t *testing.T) {
+	t.Run("infinite loop times out", func(t *testing.T) {
+		engine := NewJsEngine(&JsEngineOptions{
+			Timeout: 100 * time.Millisecond,
+		})
+		defer engine.Close()
+
+		_, err := engine.RunString("while(true) {}")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "timeout")
+	})
+
+	t.Run("sleep exceeds timeout", func(t *testing.T) {
+		engine := NewJsEngine(&JsEngineOptions{
+			Timeout: 100 * time.Millisecond,
+		})
+		defer engine.Close()
+
+		_, err := engine.RunString("sleep(5000)")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "timeout")
+	})
+
+	t.Run("fast script completes within timeout", func(t *testing.T) {
+		engine := NewJsEngine(&JsEngineOptions{
+			Timeout: 5 * time.Second,
+		})
+		defer engine.Close()
+
+		val, err := engine.RunString("2 + 2")
+		require.NoError(t, err)
+		assert.Equal(t, "4", val.String())
+	})
+
+	t.Run("default timeout from env var", func(t *testing.T) {
+		os.Setenv("JS_TIMEOUT_MS", "200")
+		defer os.Unsetenv("JS_TIMEOUT_MS")
+
+		timeout := defaultJSTimeoutFromEnv()
+		assert.Equal(t, 200*time.Millisecond, timeout)
+	})
+
+	t.Run("default timeout with invalid env var", func(t *testing.T) {
+		os.Setenv("JS_TIMEOUT_MS", "invalid")
+		defer os.Unsetenv("JS_TIMEOUT_MS")
+
+		timeout := defaultJSTimeoutFromEnv()
+		assert.Equal(t, 5*time.Second, timeout)
+	})
+
+	t.Run("default timeout with negative env var", func(t *testing.T) {
+		os.Setenv("JS_TIMEOUT_MS", "-100")
+		defer os.Unsetenv("JS_TIMEOUT_MS")
+
+		timeout := defaultJSTimeoutFromEnv()
+		assert.Equal(t, 5*time.Second, timeout)
+	})
+
+	t.Run("default timeout with empty env var", func(t *testing.T) {
+		os.Unsetenv("JS_TIMEOUT_MS")
+		timeout := defaultJSTimeoutFromEnv()
+		assert.Equal(t, 5*time.Second, timeout)
+	})
+
+	t.Run("close cancels timeout goroutine", func(t *testing.T) {
+		// 验证 Close() 不会 panic，且超时 goroutine 被正确取消
+		engine := NewJsEngine(&JsEngineOptions{
+			Timeout: 10 * time.Second, // 较长的超时
+		})
+		engine.Close() // 应立即返回，不泄漏 goroutine
+		assert.Nil(t, engine.runtime)
+	})
+
+	t.Run("timeout error message is clear", func(t *testing.T) {
+		engine := NewJsEngine(&JsEngineOptions{
+			Timeout: 50 * time.Millisecond,
+		})
+		defer engine.Close()
+
+		_, err := engine.RunString("while(true) {}")
+		require.Error(t, err)
+		// goja wraps interrupt as an error containing the interrupt message
+		assert.Contains(t, err.Error(), "timeout")
 	})
 }
 

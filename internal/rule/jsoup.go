@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/net/html"
 )
 
 // CSSRule 解析一条 CSS 规则，返回提取的文本列表
@@ -41,8 +42,9 @@ func ParseCSS(selector string, doc *goquery.Document) ([]string, error) {
 }
 
 // parseCSSChain 处理 && 链式组合
+// 当所有部分返回相同数量的结果时，按位置交叉合并；否则直接拼接
 func parseCSSChain(parts []string, doc *goquery.Document) ([]string, error) {
-	var results []string
+	var allResults [][]string
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -52,6 +54,37 @@ func parseCSSChain(parts []string, doc *goquery.Document) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("chain part %q: %w", part, err)
 		}
+		allResults = append(allResults, res)
+	}
+
+	if len(allResults) == 0 {
+		return []string{}, nil
+	}
+
+	// 检查是否所有部分返回相同数量的结果
+	allSameCount := true
+	firstCount := len(allResults[0])
+	for _, res := range allResults {
+		if len(res) != firstCount {
+			allSameCount = false
+			break
+		}
+	}
+
+	if allSameCount && firstCount > 0 {
+		// 交叉合并：按位置轮流取各部分的结果
+		var results []string
+		for i := 0; i < firstCount; i++ {
+			for _, res := range allResults {
+				results = append(results, res[i])
+			}
+		}
+		return results, nil
+	}
+
+	// 直接拼接
+	var results []string
+	for _, res := range allResults {
 		results = append(results, res...)
 	}
 	return results, nil
@@ -84,11 +117,11 @@ func parseCSSSingle(selector string, doc *goquery.Document) ([]string, error) {
 
 // IndexSpec 扩展索引规范
 type IndexSpec struct {
-	// 模式: "single" | "last" | "indices" | "range" | "exclude"
+	// 模式: "all" | "single" | "indices" | "range" | "exclude"
 	Mode string
-	// 单个索引 (Mode=="single")
+	// 单个索引 (Mode=="single")，负数表示从末尾计数
 	Single int
-	// 索引列表 (Mode=="indices")
+	// 索引列表 (Mode=="indices")，负数表示从末尾计数
 	Indices []int
 	// 区间 [start, end) (Mode=="range" | "exclude")
 	Start, End int
@@ -98,8 +131,10 @@ type IndexSpec struct {
 var (
 	// tag:10 或 tag:-1
 	reSingleIndex = regexp.MustCompile(`^(.+?):(-?\d+)$`)
-	// tag[0,2,4]
+	// tag[0,2,4]（仅正数）
 	reIndices     = regexp.MustCompile(`^(.+?)\[(\d+(?:,\d+)*)\]$`)
+	// tag[0,-1,2]（支持负数）
+	reIndicesNeg  = regexp.MustCompile(`^(.+?)\[(-?\d+(?:,-?\d+)*)\]$`)
 	// tag[0:5] 区间
 	reRange       = regexp.MustCompile(`^(.+?)\[(\d+):(\d+)\]$`)
 	// tag!0:3 排除
@@ -107,41 +142,48 @@ var (
 )
 
 // parseIndexSyntax 解析扩展索引语法，返回 (IndexSpec, 纯CSS选择器)
+// 对于复合选择器（含空格），扫描各部分找到索引语法
 func parseIndexSyntax(selector string) (IndexSpec, string) {
 	spec := IndexSpec{Mode: "all"} // 默认全部
 
-	// 排除: tag!0:3
-	if m := reExclude.FindStringSubmatch(selector); m != nil {
-		start, _ := strconv.Atoi(m[2])
-		end, _ := strconv.Atoi(m[3])
-		return IndexSpec{Mode: "exclude", Start: start, End: end}, m[1]
-	}
+	parts := strings.Fields(selector)
 
-	// 区间: tag[0:5]
-	if m := reRange.FindStringSubmatch(selector); m != nil {
-		start, _ := strconv.Atoi(m[2])
-		end, _ := strconv.Atoi(m[3])
-		return IndexSpec{Mode: "range", Start: start, End: end}, m[1]
-	}
+	// 扫描每个部分，找到第一个含索引语法的部分
+	for i, part := range parts {
+		// 排除: tag!0:3
+		if m := reExclude.FindStringSubmatch(part); m != nil {
+			start, _ := strconv.Atoi(m[2])
+			end, _ := strconv.Atoi(m[3])
+			parts[i] = m[1]
+			return IndexSpec{Mode: "exclude", Start: start, End: end}, strings.Join(parts, " ")
+		}
 
-	// 索引列表: tag[0,2,4]
-	if m := reIndices.FindStringSubmatch(selector); m != nil {
-		var indices []int
-		for _, v := range strings.Split(m[2], ",") {
-			if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-				indices = append(indices, i)
+		// 区间: tag[0:5]
+		if m := reRange.FindStringSubmatch(part); m != nil {
+			start, _ := strconv.Atoi(m[2])
+			end, _ := strconv.Atoi(m[3])
+			parts[i] = m[1]
+			return IndexSpec{Mode: "range", Start: start, End: end}, strings.Join(parts, " ")
+		}
+
+		// 索引列表: tag[0,2,4]（支持负数）
+		if m := reIndicesNeg.FindStringSubmatch(part); m != nil {
+			var indices []int
+			for _, v := range strings.Split(m[2], ",") {
+				if idx, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+					indices = append(indices, idx)
+				}
 			}
+			parts[i] = m[1]
+			return IndexSpec{Mode: "indices", Indices: indices}, strings.Join(parts, " ")
 		}
-		return IndexSpec{Mode: "indices", Indices: indices}, m[1]
-	}
 
-	// 单个索引: tag:10 或 tag:-1
-	if m := reSingleIndex.FindStringSubmatch(selector); m != nil {
-		idx, _ := strconv.Atoi(m[2])
-		if idx < 0 {
-			return IndexSpec{Mode: "last"}, m[1]
+		// 单个索引: tag:10 或 tag:-1（支持负数）
+		if m := reSingleIndex.FindStringSubmatch(part); m != nil {
+			idx, _ := strconv.Atoi(m[2])
+			parts[i] = m[1]
+			return IndexSpec{Mode: "single", Single: idx}, strings.Join(parts, " ")
 		}
-		return IndexSpec{Mode: "single", Single: idx}, m[1]
 	}
 
 	return spec, selector
@@ -155,8 +197,21 @@ func selectElements(selector string, doc *goquery.Document) ([]*goquery.Selectio
 
 	var selections []*goquery.Selection
 
-	// 处理伪类 :not, :has, :is, :where 等 — goquery 原生支持
-	// 处理属性选择器中的特殊字符
+	// 处理子选择器 >：每个父元素只取第一个匹配的直接子元素
+	if strings.Contains(selector, ">") {
+		parts := strings.SplitN(selector, ">", 2)
+		parentSel := strings.TrimSpace(parts[0])
+		childSel := strings.TrimSpace(parts[1])
+
+		parents := doc.Find(parentSel)
+		parents.Each(func(_ int, p *goquery.Selection) {
+			first := p.ChildrenFiltered(childSel).First()
+			if first.Length() > 0 {
+				selections = append(selections, first)
+			}
+		})
+		return selections, nil
+	}
 
 	sel := doc.Find(selector)
 	if sel.Length() == 0 {
@@ -182,28 +237,22 @@ func applyIndexSpec(elems []*goquery.Selection, spec IndexSpec) []*goquery.Selec
 
 	switch spec.Mode {
 	case "single":
-		if spec.Single >= 0 && spec.Single < n {
-			result = append(result, elems[spec.Single])
-		} else if spec.Single < 0 {
-			// 负数索引: -1 表示最后一个
-			idx := n + spec.Single
-			if idx >= 0 && idx < n {
-				result = append(result, elems[idx])
-			}
+		idx := spec.Single
+		if idx < 0 {
+			idx = n + idx // 负数索引: -1 → 最后一个, -2 → 倒数第二个
 		}
-
-	case "last":
-		result = append(result, elems[n-1])
+		if idx >= 0 && idx < n {
+			result = append(result, elems[idx])
+		}
 
 	case "indices":
 		for _, idx := range spec.Indices {
-			if idx >= 0 && idx < n {
-				result = append(result, elems[idx])
-			} else if idx < 0 {
-				nidx := n + idx
-				if nidx >= 0 && nidx < n {
-					result = append(result, elems[nidx])
-				}
+			actualIdx := idx
+			if actualIdx < 0 {
+				actualIdx = n + idx
+			}
+			if actualIdx >= 0 && actualIdx < n {
+				result = append(result, elems[actualIdx])
 			}
 		}
 
@@ -239,6 +288,92 @@ func applyIndexSpec(elems []*goquery.Selection, spec IndexSpec) []*goquery.Selec
 	return result
 }
 
+// inlineElements 行内元素集合：这些元素的文本直接拼接，不产生换行
+var inlineElements = map[string]bool{
+	"a": true, "abbr": true, "acronym": true, "b": true, "bdo": true,
+	"big": true, "br": true, "cite": true, "code": true, "dfn": true,
+	"em": true, "i": true, "img": true, "input": true, "kbd": true,
+	"label": true, "li": true, "map": true, "object": true, "output": true,
+	"q": true, "s": true, "samp": true, "select": true, "small": true,
+	"span": true, "strong": true, "sub": true, "sup": true, "textarea": true,
+	"tt": true, "u": true, "var": true,
+}
+
+// extractCustomText 自定义文本提取：
+// - 行内元素（<li>、<a>、<strong>、<span> 等）的文本直接拼接（不产生换行）
+// - 块级元素的文本各自独立成行
+func extractCustomText(sel *goquery.Selection) string {
+	var parts []string
+	sel.Each(func(_ int, s *goquery.Selection) {
+		for _, n := range s.Nodes {
+			collectTextFromNode(n, &parts)
+		}
+	})
+	// 过滤空字符串
+	var result []string
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			result = append(result, t)
+		}
+	}
+	return strings.Join(result, "\n")
+}
+
+// collectTextFromNode 递归收集节点文本
+// 行内元素和文本节点的文本累积在一起，块级元素产生独立行
+func collectTextFromNode(n *html.Node, parts *[]string) {
+	var inlineText strings.Builder
+
+	// flushInline 将累积的行内文本作为一个部分加入 results
+	flushInline := func() {
+		if inlineText.Len() > 0 {
+			t := strings.TrimSpace(inlineText.String())
+			if t != "" {
+				*parts = append(*parts, t)
+			}
+			inlineText.Reset()
+		}
+	}
+
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.TextNode {
+			// 跳过纯空白文本节点（块级元素之间的换行/缩进）
+			if strings.TrimSpace(c.Data) == "" {
+				continue
+			}
+			inlineText.WriteString(c.Data)
+		} else if c.Type == html.ElementNode {
+			tag := c.Data
+			if inlineElements[tag] {
+				// 行内元素：累积文本（不产生换行）
+				collectInlineText(c, &inlineText)
+			} else {
+				// 块级元素：先刷新行内文本，再递归处理块级元素
+				flushInline()
+				var subParts []string
+				collectTextFromNode(c, &subParts)
+				text := strings.TrimSpace(strings.Join(subParts, "\n"))
+				if text != "" {
+					*parts = append(*parts, text)
+				}
+			}
+		}
+	}
+	flushInline()
+}
+
+// collectInlineText 收集行内元素的文本（累积到 builder，不产生换行）
+func collectInlineText(n *html.Node, builder *strings.Builder) {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.TextNode {
+			builder.WriteString(c.Data)
+		} else if c.Type == html.ElementNode {
+			collectInlineText(c, builder)
+		}
+	}
+}
+
 // extractElements 从元素集合中提取文本/HTML/属性
 func extractElements(elems []*goquery.Selection, attr string) ([]string, error) {
 	if len(elems) == 0 {
@@ -251,14 +386,14 @@ func extractElements(elems []*goquery.Selection, attr string) ([]string, error) 
 		var text string
 		switch attr {
 		case "", "text":
-			text = strings.TrimSpace(sel.Text())
+			text = extractCustomText(sel)
 		case "html":
 			html, _ := sel.Html()
 			text = strings.TrimSpace(html)
 		case "ownText":
 			text = strings.TrimSpace(sel.Contents().Text())
 		case "allText":
-			text = strings.TrimSpace(sel.Text())
+			text = extractCustomText(sel)
 		default:
 			// 属性提取: @href, @src, @class, @id, @title 等
 			val, exists := sel.Attr(attr)

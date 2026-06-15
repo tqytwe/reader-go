@@ -55,7 +55,7 @@ func TestBuildExploreURL(t *testing.T) {
 	source := &BookSource{
 		BaseURL: "https://www.example.com#",
 	}
-	got, err := wb.buildExploreURL(source, "/paihangbang_weekvisit/{{page}}.html")
+	got, err := wb.buildExploreURL(source, "/paihangbang_weekvisit/{{page}}.html", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

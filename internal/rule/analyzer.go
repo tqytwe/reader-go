@@ -28,14 +28,14 @@ func (a *RuleAnalyzer) Analyze(rule string) *ParseResult {
 		return result
 	}
 
-	// 第一步：平衡组感知的切分
+	// 平衡组感知的切分（已处理 CSS 选择器括号内的 && 拆分）
 	segments, operators, err := a.splitBalanced(rule)
 	if err != nil {
 		result.Error = err
 		return result
 	}
 
-	// 第二步：解析每个段
+	// 解析每个段
 	for _, seg := range segments {
 		raw := seg
 		seg = strings.TrimSpace(seg)
@@ -47,9 +47,9 @@ func (a *RuleAnalyzer) Analyze(rule string) *ParseResult {
 		mode, content := a.detectMode(seg)
 
 		result.Segments = append(result.Segments, RuleSegment{
-			Mode:    mode,
+			Mode:     mode,
 			Selector: content,
-			Raw:     raw,
+			Raw:      raw,
 		})
 	}
 
@@ -60,7 +60,14 @@ func (a *RuleAnalyzer) Analyze(rule string) *ParseResult {
 
 // splitBalanced 平衡组感知的规则切分
 // 核心算法：迭代扫描，跟踪平衡组状态
-// 返回切分后的段、操作符序列、错误
+//
+// 拆分规则：
+//   - 顶层（所有括号闭合）：&&、||、%% 均拆分
+//   - CSS 选择器括号内（有前缀的括号）：仅当无顶层 ||/%% 时，&& 也拆分
+//   - 纯分组括号内（无前缀的括号）：不拆分（由 countOperatorsWithFlatten 递归处理）
+//
+// CSS 选择器括号：前面紧接标识符字符的 (，如 div.book-info(...)
+// 纯分组括号：没有前缀的 (，如 (a||b)
 func (a *RuleAnalyzer) splitBalanced(rule string) ([]string, []string, error) {
 	var segments []string
 	var operators []string
@@ -187,8 +194,7 @@ func (a *RuleAnalyzer) splitBalanced(rule string) ([]string, []string, error) {
 			if len(subSegments) > 1 {
 				// 替换当前段为子段，在操作符列表中插入子操作符
 				segments = append(segments[:i], append(subSegments, segments[i+1:]...)...)
-				// 在 operators 中插入子操作符（在当前操作符之前）
-				// 需要找到正确的插入位置
+				// 在 operators 中插入子操作符
 				newOps := make([]string, 0, len(operators)+len(subOperators))
 				for j, op := range operators {
 					if j == i {
@@ -204,12 +210,297 @@ func (a *RuleAnalyzer) splitBalanced(rule string) ([]string, []string, error) {
 		}
 	}
 
+	// 后处理：在 CSS 选择器括号内拆分操作符
+	// - || 在 CSS 选择器括号内始终拆分
+	// - && 在 CSS 选择器括号内仅当有顶层 && 时拆分
+	hasTopLevelAnd := false
+	for _, op := range operators {
+		if op == "&&" {
+			hasTopLevelAnd = true
+			break
+		}
+	}
+	segments, operators = splitCSSSelectorParens(segments, operators, hasTopLevelAnd)
+
 	// 验证：操作符数量应该等于段数量-1
 	if len(operators) > 0 && len(segments) != len(operators)+1 {
 		return nil, nil, &ParseError{Msg: "mismatched operators and segments"}
 	}
 
 	return segments, operators, nil
+}
+
+// splitCSSSelectorParens 对段中的 CSS 选择器括号内的操作符进行拆分
+// hasTopLevelAnd 为 true 时：拆分 CSS 选择器括号内的 && 和 ||
+// hasTopLevelAnd 为 false 时：仅拆分 CSS 选择器括号内的 ||
+func splitCSSSelectorParens(segments []string, operators []string, hasTopLevelAnd bool) ([]string, []string) {
+	var newSegments []string
+	var newOperators []string
+
+	for i, seg := range segments {
+		splitPoints := findOpsInCSSSelectorParens(seg, hasTopLevelAnd)
+		if len(splitPoints) > 0 {
+			// 按位置排序（已经是有序的，因为扫描从左到右）
+			subSegs := make([]string, 0, len(splitPoints)+1)
+			subOps := make([]string, 0, len(splitPoints))
+			prev := 0
+			for _, sp := range splitPoints {
+				subSegs = append(subSegs, seg[prev:sp.pos])
+				subOps = append(subOps, sp.op)
+				prev = sp.pos + 2 // skip the 2-char operator
+			}
+			if prev < len(seg) {
+				subSegs = append(subSegs, seg[prev:])
+			}
+
+			newSegments = append(newSegments, subSegs...)
+			newOperators = append(newOperators, subOps...)
+		} else {
+			newSegments = append(newSegments, seg)
+		}
+
+		// 添加该段之后的顶层操作符
+		if i < len(operators) {
+			newOperators = append(newOperators, operators[i])
+		}
+	}
+
+	return newSegments, newOperators
+}
+
+type splitPoint struct {
+	pos int
+	op  string
+}
+
+// findOpsInCSSSelectorParens 找出字符串中 CSS 选择器括号（有前缀的括号）内的操作符位置
+// hasTopLevelAnd 为 true 时找 && 和 ||，为 false 时只找 ||
+func findOpsInCSSSelectorParens(s string, hasTopLevelAnd bool) []splitPoint {
+	var points []splitPoint
+	n := len(s)
+
+	// 找出所有有前缀的 ( 位置
+	prefixedOpenParens := make(map[int]bool)
+	inString := false
+	escapeNext := false
+	for j := 0; j < n; j++ {
+		ch := s[j]
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+		if inString && ch == '\\' {
+			escapeNext = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '(' && j > 0 && isIdentChar(s[j-1]) {
+			prefixedOpenParens[j] = true
+		}
+	}
+
+	if len(prefixedOpenParens) == 0 {
+		return nil
+	}
+
+	// 扫描，跟踪在有前缀括号内的深度，找出操作符位置
+	prefixedParenDepth := 0
+	bracketDepth := 0
+	inString = false
+	escapeNext = false
+	for j := 0; j < n; j++ {
+		ch := s[j]
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+		if inString && ch == '\\' {
+			escapeNext = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '[' {
+			bracketDepth++
+			continue
+		}
+		if ch == ']' {
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			continue
+		}
+		if ch == '(' {
+			if prefixedOpenParens[j] {
+				prefixedParenDepth++
+			}
+			continue
+		}
+		if ch == ')' {
+			if prefixedParenDepth > 0 {
+				prefixedParenDepth--
+			}
+			continue
+		}
+		if prefixedParenDepth > 0 && bracketDepth == 0 && j+1 < n {
+			// || 在 CSS 选择器括号内始终拆分
+			if ch == '|' && s[j+1] == '|' {
+				points = append(points, splitPoint{j, "||"})
+			} else if hasTopLevelAnd && ch == '&' && s[j+1] == '&' {
+				// && 在 CSS 选择器括号内仅当有顶层 && 时拆分
+				points = append(points, splitPoint{j, "&&"})
+			}
+		}
+	}
+
+	return points
+}
+
+// isInsidePrefixedParenAt 判断位置 pos 是否在有前缀的括号内
+func isInsidePrefixedParenAt(rule string, pos int) bool {
+	n := len(rule)
+
+	// 找出所有有前缀的 ( 位置
+	prefixedOpenParens := make(map[int]bool)
+	inString := false
+	escapeNext := false
+	for i := 0; i < n && i <= pos; i++ {
+		ch := rule[i]
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+		if inString && ch == '\\' {
+			escapeNext = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '(' && i > 0 && isIdentChar(rule[i-1]) {
+			prefixedOpenParens[i] = true
+		}
+	}
+
+	// 扫描到 pos，跟踪在有前缀括号内的深度
+	prefixedParenDepth := 0
+	inString = false
+	escapeNext = false
+	for i := 0; i < pos && i < n; i++ {
+		ch := rule[i]
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+		if inString && ch == '\\' {
+			escapeNext = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '(' {
+			if prefixedOpenParens[i] {
+				prefixedParenDepth++
+			}
+		} else if ch == ')' {
+			if prefixedParenDepth > 0 {
+				prefixedParenDepth--
+			}
+		}
+	}
+
+	return prefixedParenDepth > 0
+}
+
+// isIdentChar 判断字符是否为标识符字符（CSS 选择器前缀的组成部分）
+// 不包含 ] 和 )，因为 ]( 和 )( 表示分组括号而非 CSS 选择器括号
+func isIdentChar(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.' ||
+		ch == '#' || ch == ':'
+}
+
+// countOperatorsWithFlatten 递归计算操作符数量，展开纯分组括号
+// 纯分组括号：以 ( 开头、以 ) 结尾、括号全程平衡的段
+// 对于纯分组括号，去掉外层括号后递归计算内部操作符
+func countOperatorsWithFlatten(analyzer *RuleAnalyzer, segments []string, operators []string) int {
+	count := len(operators)
+	for _, seg := range segments {
+		trimmed := strings.TrimSpace(seg)
+		if isPureParenGroup(trimmed) {
+			inner := trimmed[1 : len(trimmed)-1]
+			if inner != "" {
+				innerSegs, innerOps, err := analyzer.splitBalanced(inner)
+				if err == nil {
+					count += countOperatorsWithFlatten(analyzer, innerSegs, innerOps)
+				}
+			}
+		}
+	}
+	return count
+}
+
+// isPureParenGroup 判断字符串是否为纯圆括号分组
+// 条件：以 ( 开头，以 ) 结尾，且括号在整个字符串中始终平衡
+// 例如: "(a||b)" → true, "((a||b))" → true, "div(a||b)" → false
+func isPureParenGroup(s string) bool {
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return false
+	}
+	depth := 0
+	inString := false
+	escapeNext := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+		if inString && ch == '\\' {
+			escapeNext = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '(' {
+			depth++
+		} else if ch == ')' {
+			depth--
+			if depth < 0 {
+				return false
+			}
+			// 括号在最后一个字符之前归零，说明不是纯分组
+			if depth == 0 && i < len(s)-1 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // hasUnclosedDelimiters 判断规则是否包含未闭合的分隔符
@@ -338,6 +629,12 @@ func (a *RuleAnalyzer) detectMode(rule string) (RuleMode, string) {
 		return ModeXPath, trimmed
 	}
 
+	// CSS 元素选择器：单个单词（无空格、非引号开头）视为 CSS 元素名
+	// 例如 footer、div、span 等
+	if !strings.Contains(trimmed, " ") && trimmed != "" && trimmed[0] != '"' {
+		return ModeXPath, trimmed
+	}
+
 	// 默认模式
 	return ModeDefault, trimmed
 }
@@ -351,13 +648,19 @@ func (a *RuleAnalyzer) Split(rule string) ([]string, []string, error) {
 	return a.splitBalanced(rule)
 }
 
-// GetOperatorCount 返回规则中的操作符数量
+// GetOperatorCount 返回规则中的操作符数量（包含纯分组括号内的操作符）
 func (a *RuleAnalyzer) GetOperatorCount(rule string) int {
-	_, operators, _ := a.splitBalanced(rule)
-	return len(operators)
+	if rule == "" {
+		return 0
+	}
+	segments, operators, err := a.splitBalanced(rule)
+	if err != nil {
+		return 0
+	}
+	return countOperatorsWithFlatten(a, segments, operators)
 }
 
-// HasOperator 规则是否包含操作符
+// HasOperator 规则是否包含顶层操作符
 func (a *RuleAnalyzer) HasOperator(rule string) bool {
 	_, operators, _ := a.splitBalanced(rule)
 	return len(operators) > 0
