@@ -20,7 +20,11 @@ var legadoAttrs = map[string]bool{
 // legadoIdxAll 表示未指定索引时匹配全部元素（Legado 正文 @p@html 等场景）
 const legadoIdxAll = -2
 
+// legadoIdxExcludeBase 排除索引的基础值，!N 对应 legadoIdxExcludeBase - N
+const legadoIdxExcludeBase = -1000
+
 var legadoIndexSuffix = regexp.MustCompile(`^(.+)\.(-?\d+)$`)
+var legadoExcludeSuffix = regexp.MustCompile(`^(.+)!(\d+)$`)
 
 // parseLegadoFieldRules 解析 Legado 字段规则（JSON 对象或键值字符串）
 func parseLegadoFieldRules(rule string) map[string]string {
@@ -307,6 +311,16 @@ func evalLegadoListItems(root *goquery.Selection, rule string) ([]*goquery.Selec
 			}
 			continue
 		}
+		// 排除语法 !N
+		if idx <= legadoIdxExcludeBase {
+			excludeIdx := legadoIdxExcludeBase - idx
+			found.Each(func(i int, s *goquery.Selection) {
+				if i != excludeIdx {
+					out = append(out, s)
+				}
+			})
+			continue
+		}
 		found.Each(func(_ int, s *goquery.Selection) {
 			out = append(out, s)
 		})
@@ -415,6 +429,18 @@ func applyLegadoStep(sel *goquery.Selection, step string) (*goquery.Selection, e
 	if idx == legadoIdxAll {
 		return found, nil
 	}
+	// 排除语法 !N：idx <= legadoIdxExcludeBase
+	if idx <= legadoIdxExcludeBase {
+		excludeIdx := legadoIdxExcludeBase - idx
+		if excludeIdx < found.Length() {
+			// 排除第 excludeIdx 个元素，返回其他所有元素
+			result := found.FilterFunction(func(i int, s *goquery.Selection) bool {
+				return i != excludeIdx
+			})
+			return result, nil
+		}
+		return found, nil
+	}
 	// 显式负索引：a.-1 表示最后一个匹配元素
 	absIdx := found.Length() + idx
 	if absIdx >= 0 && absIdx < found.Length() {
@@ -459,7 +485,13 @@ func findLegadoByText(sel *goquery.Selection, needle string) *goquery.Selection 
 
 func legadoStepToCSS(step string) (string, int) {
 	idx := legadoIdxAll
-	if m := legadoIndexSuffix.FindStringSubmatch(step); m != nil {
+	// 先检查排除语法 !N
+	if m := legadoExcludeSuffix.FindStringSubmatch(step); m != nil {
+		step = m[1]
+		excludeIdx, _ := strconv.Atoi(m[2])
+		idx = legadoIdxExcludeBase - excludeIdx
+	} else if m := legadoIndexSuffix.FindStringSubmatch(step); m != nil {
+		// 再检查普通索引 .N
 		step = m[1]
 		idx, _ = strconv.Atoi(m[2])
 	}
