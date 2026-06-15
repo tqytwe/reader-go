@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+*.exe
+
+# Data and caches
+data/
+*.db
+.cache/
+.local/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Test
+coverage/
+*.test.js
+*.spec.js
+
+# Docker
+.dockerignore
+
+# Claude/MyAgents
+.claude/
+
+# Misc
+*.bak
+*.tmp

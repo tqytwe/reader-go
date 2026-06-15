@@ -1,0 +1,19 @@
+[Unit]
+Description=Reader Go API Server
+After=network.target
+
+[Service]
+Type=simple
+User=dell
+Group=dell
+WorkingDirectory=/data/1panel/rida/reader-go
+Environment=PORT=6464
+Environment=DATABASE_URL=/data/1panel/rida/reader-go/data/reader.db
+Environment=CACHE_DIR=/data/1panel/rida/reader-go/data/cache
+ExecStart=/data/1panel/rida/reader-go/reader-go-api
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,220 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── App-wide themes (书架/书源/RSS 等全局页面) ───────────────────── */
+html.app-theme-light {
+  --app-bg: #f5f5f5;
+  --app-surface: #ffffff;
+  --app-text: #1f1f1f;
+  --app-muted: #666666;
+  --app-border: #e8e8e8;
+  --app-hover: #f0f0f0;
+  --app-accent: #1677ff;
+  color-scheme: light;
+}
+
+html.app-theme-dark {
+  --app-bg: #141414;
+  --app-surface: #1f1f1f;
+  --app-text: #e8e8e8;
+  --app-muted: #a3a3a3;
+  --app-border: #303030;
+  --app-hover: #2a2a2a;
+  --app-accent: #4096ff;
+  color-scheme: dark;
+}
+
+html.app-theme-eye {
+  --app-bg: #e8dcc8;
+  --app-surface: #f0e6d6;
+  --app-text: #3b3228;
+  --app-muted: #6b5f4f;
+  --app-border: #d4c4a8;
+  --app-hover: #e0d2bc;
+  --app-accent: #8b6914;
+  color-scheme: light;
+}
+
+html {
+  background-color: var(--app-bg, #f5f5f5);
+  color: var(--app-text, #1f1f1f);
+}
+
+/* ── Reader themes ─────────────────────────────────────────────────── */
+/* Light theme */
+body.theme-light {
+  --reader-bg: #f5f5f5;
+  --reader-text: #333333;
+  --reader-border: rgba(0, 0, 0, 0.06);
+  --reader-muted: rgba(0, 0, 0, 0.45);
+  --reader-hover: rgba(0, 0, 0, 0.04);
+  --reader-active: rgba(22, 119, 255, 0.08);
+}
+
+/* Dark theme */
+body.theme-dark {
+  --reader-bg: #1a1a2e;
+  --reader-text: #e0e0e0;
+  --reader-border: rgba(255, 255, 255, 0.06);
+  --reader-muted: rgba(255, 255, 255, 0.45);
+  --reader-hover: rgba(255, 255, 255, 0.04);
+  --reader-active: rgba(22, 119, 255, 0.12);
+}
+
+/* Eye-protection theme */
+body.theme-eye {
+  --reader-bg: #c7b698;
+  --reader-text: #3b3b3b;
+  --reader-border: rgba(0, 0, 0, 0.08);
+  --reader-muted: rgba(0, 0, 0, 0.4);
+  --reader-hover: rgba(0, 0, 0, 0.05);
+  --reader-active: rgba(22, 119, 255, 0.1);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: var(--reader-bg, var(--app-bg, #f5f5f5));
+  color: var(--reader-text, var(--app-text, #333333));
+}
+
+/* 全局 Ant Design 与布局在主题下的适配 */
+html.app-theme-dark .ant-layout,
+html.app-theme-dark .ant-layout-sider,
+html.app-theme-dark .ant-layout-header {
+  background: var(--app-surface) !important;
+  color: var(--app-text);
+}
+
+html.app-theme-dark .ant-card {
+  background: var(--app-surface);
+  color: var(--app-text);
+  border-color: var(--app-border);
+}
+
+html.app-theme-eye .ant-layout,
+html.app-theme-eye .ant-layout-sider,
+html.app-theme-eye .ant-layout-header {
+  background: var(--app-surface) !important;
+}
+
+.app-shell-sider {
+  background: var(--app-surface) !important;
+  border-right: 1px solid var(--app-border);
+}
+
+.app-shell-header {
+  background: var(--app-surface) !important;
+  border-bottom: 1px solid var(--app-border) !important;
+  height: 56px !important;
+  line-height: normal !important;
+  padding: 0 24px !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.app-shell-header-inner {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  gap: 16px;
+}
+
+.app-shell-content {
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+.app-nav-link {
+  color: var(--app-muted);
+}
+
+.app-nav-link:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+
+.app-nav-link-active {
+  background: var(--app-accent) !important;
+  color: #fff !important;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}
+
+/* ── Reader content typography ─────────────────────────────────────── */
+.reader-content p {
+  margin-bottom: 1em;
+  text-align: justify;
+}
+
+.reader-content h1,
+.reader-content h2,
+.reader-content h3 {
+  margin-top: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.reader-content a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--reader-muted);
+}
+
+/* ── Scrollbar styling ─────────────────────────────────────────────── */
+.reader-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.reader-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.reader-content::-webkit-scrollbar-thumb {
+  background: var(--reader-muted);
+  border-radius: 3px;
+  opacity: 0.3;
+}
+
+.reader-content::-webkit-scrollbar-thumb:hover {
+  opacity: 0.5;
+}
+
+/* ── Page turn animation ───────────────────────────────────────────── */
+@keyframes pageTurn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.reader-page-enter {
+  animation: pageTurn 0.3s ease-out;
+}
+
+/* ── Mobile responsive ─────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .reader-content {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+  }
+}

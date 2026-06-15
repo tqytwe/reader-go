@@ -1,0 +1,412 @@
+package webbook
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"reader-go/internal/rule"
+)
+
+// ExploreTab 书海分类 Tab
+type ExploreTab struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// ExploreResult 书海发现结果
+type ExploreResult struct {
+	SourceID   string       `json:"sourceId"`
+	SourceName string       `json:"sourceName"`
+	Tab        string       `json:"tab"`
+	URL        string       `json:"url"`
+	Tabs       []ExploreTab `json:"tabs,omitempty"`
+	Books      []Book       `json:"books"`
+	Page       int          `json:"page"`
+	PageSize   int          `json:"pageSize"`
+	HasMore    bool         `json:"hasMore"`
+}
+
+// ResolveExploreURL 解析 exploreUrl（支持 JSON Tab 数组、换行分隔的 分类::URL 格式、纯URL）。
+// 返回 resolved URL、全部 tabs、实际选中的 tab 标题。
+func ResolveExploreURL(exploreURL, tab string) (resolved string, tabs []ExploreTab, resolvedTab string, err error) {
+	exploreURL = strings.TrimSpace(exploreURL)
+	if exploreURL == "" {
+		return "", nil, "", fmt.Errorf("explore URL empty")
+	}
+
+	// 1. 支持JSON数组格式（兼容单引号、双引号）
+	if strings.HasPrefix(exploreURL, "[") {
+		// 先处理单引号JSON，替换成双引号
+		normalized := regexp.MustCompile(`'([^']*)'`).ReplaceAllString(exploreURL, `"$1"`)
+		// 处理多余的换行和空格
+		normalized = strings.ReplaceAll(normalized, "\n", "")
+		normalized = strings.ReplaceAll(normalized, "\t", "")
+		if err := json.Unmarshal([]byte(normalized), &tabs); err == nil && len(tabs) > 0 {
+			// 处理URL中的变量占位符
+			for i := range tabs {
+				tabs[i].URL = strings.ReplaceAll(tabs[i].URL, "&amp;", "&")
+				tabs[i].URL = strings.ReplaceAll(tabs[i].URL, "&", "&")
+			}
+		}
+	}
+
+	// 2. 支持换行分隔的 分类名::URL 格式（Legado常用格式）
+	if len(tabs) == 0 && strings.Contains(exploreURL, "::") && strings.Contains(exploreURL, "\n") {
+		lines := strings.Split(exploreURL, "\n")
+		var baseURL string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, "::", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			title := strings.TrimSpace(parts[0])
+			link := strings.TrimSpace(parts[1])
+			if title == "" || link == "" {
+				continue
+			}
+			// 第一行如果是http开头，当成baseURL
+			if baseURL == "" && strings.HasPrefix(title, "http") {
+				baseURL = title
+				continue
+			}
+			// 相对URL自动和baseURL拼接
+			if baseURL != "" && !strings.HasPrefix(link, "http") {
+				if !strings.HasPrefix(link, "/") {
+					link = "/" + link
+				}
+				// 解析baseURL
+				u, err := url.Parse(baseURL)
+				if err == nil {
+					link = u.Scheme + "://" + u.Host + link
+				}
+			}
+			tabs = append(tabs, ExploreTab{Title: title, URL: link})
+		}
+	}
+
+	// 3. 纯URL格式
+	if len(tabs) == 0 {
+		return exploreURL, nil, tab, nil
+	}
+	if tab != "" {
+		tabTrim := strings.TrimSpace(strings.ToLower(tab))
+		for _, t := range tabs {
+			if strings.TrimSpace(strings.ToLower(t.Title)) == tabTrim {
+				if strings.TrimSpace(t.URL) == "" {
+					return "", tabs, tab, fmt.Errorf("explore tab %q has empty URL", tab)
+				}
+				return t.URL, tabs, tab, nil
+			}
+		}
+		// 模糊匹配：包含关键词就算匹配
+		for _, t := range tabs {
+			if strings.Contains(strings.ToLower(t.Title), tabTrim) {
+				if strings.TrimSpace(t.URL) == "" {
+					return "", tabs, tab, fmt.Errorf("explore tab %q has empty URL", tab)
+				}
+				return t.URL, tabs, tab, nil
+			}
+		}
+		return "", tabs, tab, fmt.Errorf("explore tab not found: %s", tab)
+	}
+	for _, t := range tabs {
+		if strings.TrimSpace(t.URL) == "" {
+			continue
+		}
+		return t.URL, tabs, t.Title, nil
+	}
+	return "", tabs, "", fmt.Errorf("no explore tab with URL configured")
+}
+
+func exploreBaseURL(base string) string {
+	base = strings.TrimSpace(base)
+	if i := strings.Index(base, "#"); i >= 0 {
+		base = base[:i]
+	}
+	return strings.TrimRight(base, "/")
+}
+
+// buildExploreURL 将 explore 相对路径拼成可请求的绝对 URL，并替换 {{page}} 等模板变量。
+// 支持 page 参数（默认 1）。
+func (wb *WebBook) buildExploreURL(source *BookSource, template string, page int) (string, error) {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return "", fmt.Errorf("explore URL empty")
+	}
+
+	if strings.HasPrefix(template, "@js:") {
+		vars := map[string]string{"page": strconv.Itoa(page)}
+		return wb.evalJSURL(source, template, vars)
+	}
+
+	if !strings.HasPrefix(template, "http://") && !strings.HasPrefix(template, "https://") {
+		base := exploreBaseURL(source.BaseURL)
+		if base == "" {
+			return "", fmt.Errorf("baseUrl empty for relative explore URL")
+		}
+		if !strings.HasPrefix(template, "/") {
+			template = "/" + template
+		}
+		template = base + template
+	}
+
+	// 有序替换：双括号优先
+	pageStr := strconv.Itoa(page)
+	template = strings.ReplaceAll(template, "{{page}}", pageStr)
+	template = strings.ReplaceAll(template, "{page}", pageStr)
+	return template, nil
+}
+
+// ExploreSearchResult 搜索/筛选结果
+type ExploreSearchResult struct {
+	SourceID   string       `json:"sourceId"`
+	SourceName string       `json:"sourceName"`
+	Tab        string       `json:"tab"`
+	URL        string       `json:"url"`
+	Tabs       []ExploreTab `json:"tabs,omitempty"`
+	Books      []Book       `json:"books"`
+	Page       int          `json:"page"`
+	PageSize   int          `json:"pageSize"`
+	HasMore    bool         `json:"hasMore"`
+	Total      int          `json:"total"`
+}
+
+// ExploreSearchRequest 搜索请求参数
+type ExploreSearchRequest struct {
+	SourceID int64  `json:"sourceId"`
+	Tab      string `json:"tab"`
+	Page     int    `json:"page"`
+	PageSize int    `json:"pageSize"`
+	Search   string `json:"search"`
+	Category string `json:"category"`
+}
+
+func (wb *WebBook) modeForExplore(source *BookSource) rule.RuleMode {
+	if source.ExploreMode != "" {
+		return rule.ModeFromString(source.ExploreMode)
+	}
+	return wb.modeFor(source, "search")
+}
+
+// Explore 按书源 exploreRule 解析书单（单页，默认 page=1）
+func (wb *WebBook) Explore(ctx context.Context, source *BookSource, tab string) (*ExploreResult, error) {
+	result, err := wb.ExploreSearch(ctx, source, tab, 1, 30, "", "")
+	if err != nil {
+		return nil, err
+	}
+	return &ExploreResult{
+		SourceID:   result.SourceID,
+		SourceName: result.SourceName,
+		Tab:        result.Tab,
+		URL:        result.URL,
+		Tabs:       result.Tabs,
+		Books:      result.Books,
+		Page:       result.Page,
+		PageSize:   result.PageSize,
+		HasMore:    result.HasMore,
+	}, nil
+}
+
+// ExploreSearch 支持分页、搜索、分类筛选的书海查询
+func (wb *WebBook) ExploreSearch(ctx context.Context, source *BookSource, tab string, page, pageSize int, search, category string) (*ExploreSearchResult, error) {
+	if source == nil {
+		return nil, fmt.Errorf("source is nil")
+	}
+
+	rawURL, tabs, resolvedTab, err := ResolveExploreURL(source.ExploreURL, tab)
+	if err != nil {
+		return nil, err
+	}
+
+	// 构建 URL（使用实际页码）
+	resolvedURL, err := wb.buildExploreURL(source, rawURL, page)
+	if err != nil {
+		return nil, err
+	}
+
+	// 如果有搜索关键词，尝试用搜索 URL 而不是 explore URL
+	fetchMethod := "GET"
+	fetchBody := ""
+	if strings.TrimSpace(search) != "" {
+		searchURL, method, body, err := wb.buildExploreSearchURL(source, search, page)
+		if err == nil && searchURL != "" {
+			resolvedURL = searchURL
+			fetchMethod = method
+			fetchBody = body
+		}
+	}
+
+	wb.concurrent.SourceWait(source.ID)
+	resp, err := wb.fetch(ctx, source, resolvedURL, fetchMethod, fetchBody)
+	if err != nil {
+		return nil, err
+	}
+
+	ruleText := strings.TrimSpace(source.ExploreRule)
+	if ruleText == "" {
+		ruleText = source.SearchRule
+	}
+	mode := wb.modeForExplore(source)
+	// 自动检测JSON响应
+	if strings.HasPrefix(strings.TrimSpace(resp.Body), "{") || strings.HasPrefix(strings.TrimSpace(resp.Body), "[") {
+		mode = rule.ModeJSONPath
+	}
+	books, err := wb.parseListPageWithRules(ctx, source, resp.Body, resp.URL, ruleText, mode)
+	if err != nil {
+		return nil, err
+	}
+
+	// 应用搜索/分类筛选（如果指定了关键词）
+	if strings.TrimSpace(search) != "" {
+		searchLower := strings.ToLower(search)
+		filtered := make([]Book, 0, len(books))
+		for _, b := range books {
+			if strings.Contains(strings.ToLower(b.Name), searchLower) ||
+				strings.Contains(strings.ToLower(b.Author), searchLower) {
+				filtered = append(filtered, b)
+			}
+		}
+		books = filtered
+	}
+
+	if strings.TrimSpace(category) != "" {
+		filtered := make([]Book, 0, len(books))
+		for _, b := range books {
+			if strings.Contains(b.Category, category) {
+				filtered = append(filtered, b)
+			}
+		}
+		books = filtered
+	}
+
+	// 分页逻辑：
+	// - pageSize <= 0 时，返回全部书籍（不分页）
+	// - pageSize > 0 时，按 pageSize 分页
+	total := len(books)
+	var hasMore bool
+	if pageSize > 0 {
+		start := (page - 1) * pageSize
+		if start < 0 {
+			start = 0
+		}
+		if start > len(books) {
+			start = len(books)
+		}
+		end := start + pageSize
+		if end > len(books) {
+			end = len(books)
+		}
+		books = books[start:end]
+		hasMore = end < total
+	} else {
+		// pageSize <= 0 返回全部，hasMore 根据是否有下一页参数判断
+		hasMore = true // 客户端可以自行控制，或者根据页码判断
+	}
+
+	return &ExploreSearchResult{
+		SourceID:   source.ID,
+		SourceName: source.Name,
+		Tab:        resolvedTab,
+		URL:        resolvedURL,
+		Tabs:       tabs,
+		Books:      books,
+		Page:       page,
+		PageSize:   pageSize,
+		HasMore:    hasMore,
+		Total:      total,
+	}, nil
+}
+
+// buildExploreSearchURL 构建探索搜索 URL（支持 {{search}} 模板）
+func (wb *WebBook) buildExploreSearchURL(source *BookSource, search string, page int) (string, string, string, error) {
+	searchRule := source.ExploreSearchURL
+	if searchRule == "" {
+		return "", "", "", fmt.Errorf("no explore search URL configured")
+	}
+
+	method := "GET"
+	body := ""
+
+	// 支持 JSON 配置
+	if idx := strings.Index(searchRule, ",{"); idx > 0 {
+		metaJSON := searchRule[idx+1:]
+		searchRule = searchRule[:idx]
+		metaJSON = strings.ReplaceAll(metaJSON, "'", "\"")
+		var meta struct {
+			Method string `json:"method"`
+			Body   string `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(metaJSON), &meta); err == nil {
+			if meta.Method != "" {
+				method = strings.ToUpper(meta.Method)
+			}
+			body = meta.Body
+		}
+	}
+
+	if strings.HasPrefix(searchRule, "@js:") {
+		vars := map[string]string{"search": search, "page": strconv.Itoa(page)}
+		u, err := wb.evalJSURL(source, searchRule, vars)
+		if err != nil {
+			return "", "", "", err
+		}
+		return u, method, body, nil
+	}
+
+	if !strings.HasPrefix(searchRule, "http://") && !strings.HasPrefix(searchRule, "https://") {
+		base := exploreBaseURL(source.BaseURL)
+		if base == "" {
+			return "", "", "", fmt.Errorf("baseUrl empty for relative explore search URL")
+		}
+		if !strings.HasPrefix(searchRule, "/") {
+			searchRule = "/" + searchRule
+		}
+		searchRule = base + searchRule
+	}
+
+	// 替换模板变量
+	encodedSearch := url.QueryEscape(search)
+	replacements := map[string]string{
+		"{{search}}": encodedSearch,
+		"{{key}}":    encodedSearch,
+		"{{page}}":   strconv.Itoa(page),
+		"{search}":   encodedSearch,
+		"{key}":      encodedSearch,
+		"{page}":     strconv.Itoa(page),
+	}
+	for k, v := range replacements {
+		searchRule = strings.ReplaceAll(searchRule, k, v)
+		body = strings.ReplaceAll(body, k, search)
+	}
+
+	return searchRule, method, body, nil
+}
+
+// SearchSingleSource 在单个书源内搜索（换源候选）
+func (wb *WebBook) SearchSingleSource(ctx context.Context, sourceID, query string) ([]Book, error) {
+	for _, s := range wb.sources {
+		if s.ID == sourceID && s.Enabled {
+			return wb.searchWithSource(ctx, s, query)
+		}
+	}
+	return nil, fmt.Errorf("source %s not found or disabled", sourceID)
+}
+
+// GetSourceByID 按 ID 取运行时书源
+func (wb *WebBook) GetSourceByID(sourceID string) *BookSource {
+	for _, s := range wb.sources {
+		if s.ID == sourceID {
+			return s
+		}
+	}
+	return nil
+}
