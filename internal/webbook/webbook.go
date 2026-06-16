@@ -657,9 +657,23 @@ func (wb *WebBook) fetch(ctx context.Context, source *BookSource, rawURL string,
 
 	browserAllowed := method == http.MethodGet && reqBody == "" && browserFetcher.IsEnabled()
 	timeout := wb.timeoutForSource(source)
+
+	// 构建完整的浏览器级别 headers
 	headers := map[string]string{
-		"User-Agent": wb.userAgent,
+		"User-Agent":      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+		"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+		"Accept-Encoding": "gzip, deflate, br",
+		"Connection":      "keep-alive",
+		"Upgrade-Insecure-Requests": "1",
+		"Sec-Fetch-Dest": "document",
+		"Sec-Fetch-Mode": "navigate",
+		"Sec-Fetch-Site": "none",
+		"Sec-Fetch-User": "?1",
+		"Cache-Control":  "max-age=0",
 	}
+
+	// 合并书源自定义 headers
 	for k, v := range source.Headers {
 		headers[k] = v
 	}
@@ -671,17 +685,42 @@ func (wb *WebBook) fetch(ctx context.Context, source *BookSource, rawURL string,
 			headers["Content-Type"] = "application/x-www-form-urlencoded"
 		}
 	}
-	result, err := utils.FetchText(ctx, utils.FetchTextOptions{
-		Method:       method,
-		URL:          parsedURL.String(),
-		Body:         reqBody,
-		Headers:      headers,
-		Client:       wb.client,
-		Timeout:      timeout,
-		AllowBrowser: browserAllowed,
-		UseHeuristic: browserAllowed,
-		Browser:      browserFetcher,
-	})
+
+	// 重试逻辑：对于 EOF 和超时错误，最多重试 2 次
+	var result *utils.FetchTextResult
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		result, err = utils.FetchText(ctx, utils.FetchTextOptions{
+			Method:       method,
+			URL:          parsedURL.String(),
+			Body:         reqBody,
+			Headers:      headers,
+			Client:       wb.client,
+			Timeout:      timeout,
+			AllowBrowser: browserAllowed,
+			UseHeuristic: browserAllowed,
+			Browser:      browserFetcher,
+		})
+
+		if err == nil {
+			break
+		}
+
+		// 检查是否是需要重试的错误
+		errStr := err.Error()
+		shouldRetry := strings.Contains(errStr, "EOF") ||
+			strings.Contains(errStr, "timeout") ||
+			strings.Contains(errStr, "connection reset") ||
+			strings.Contains(errStr, "broken pipe")
+
+		if !shouldRetry || attempt == maxRetries-1 {
+			break
+		}
+
+		// 等待一段时间后重试
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+	}
+
 	if err != nil {
 		return nil, err
 	}

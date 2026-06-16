@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -64,7 +66,23 @@ func FetchText(ctx context.Context, opts FetchTextOptions) (*FetchTextResult, er
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	// 处理压缩的响应体
+	var reader io.Reader = resp.Body
+	contentEncoding := resp.Header.Get("Content-Encoding")
+	switch strings.ToLower(contentEncoding) {
+	case "gzip":
+		reader, err = gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+	case "deflate":
+		reader = flate.NewReader(resp.Body)
+	case "br":
+		// Brotli 需要额外的库，这里先不支持
+		// 如果没有 brotli 支持，移除 Accept-Encoding 中的 br
+	}
+
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
