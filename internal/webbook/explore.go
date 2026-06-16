@@ -223,6 +223,7 @@ func (wb *WebBook) Explore(ctx context.Context, source *BookSource, tab string) 
 }
 
 // ExploreSearch 支持分页、搜索、分类筛选的书海查询
+// 当 pageSize > 0 时，会自动翻页获取足够的数据
 func (wb *WebBook) ExploreSearch(ctx context.Context, source *BookSource, tab string, page, pageSize int, search, category string) (*ExploreSearchResult, error) {
 	if source == nil {
 		return nil, fmt.Errorf("source is nil")
@@ -233,43 +234,76 @@ func (wb *WebBook) ExploreSearch(ctx context.Context, source *BookSource, tab st
 		return nil, err
 	}
 
-	// 构建 URL（使用实际页码）
-	resolvedURL, err := wb.buildExploreURL(source, rawURL, page)
-	if err != nil {
-		return nil, err
-	}
-
-	// 如果有搜索关键词，尝试用搜索 URL 而不是 explore URL
-	fetchMethod := "GET"
-	fetchBody := ""
-	if strings.TrimSpace(search) != "" {
-		searchURL, method, body, err := wb.buildExploreSearchURL(source, search, page)
-		if err == nil && searchURL != "" {
-			resolvedURL = searchURL
-			fetchMethod = method
-			fetchBody = body
-		}
-	}
-
-	wb.concurrent.SourceWait(source.ID)
-	resp, err := wb.fetch(ctx, source, resolvedURL, fetchMethod, fetchBody)
-	if err != nil {
-		return nil, err
-	}
-
 	ruleText := strings.TrimSpace(source.ExploreRule)
 	if ruleText == "" {
 		ruleText = source.SearchRule
 	}
 	mode := wb.modeForExplore(source)
-	// 自动检测JSON响应
-	if strings.HasPrefix(strings.TrimSpace(resp.Body), "{") || strings.HasPrefix(strings.TrimSpace(resp.Body), "[") {
-		mode = rule.ModeJSONPath
+
+	var allBooks []Book
+	currentPage := page
+	maxPages := 10 // 防止无限翻页
+	var lastURL string
+
+	// 自动翻页获取足够的数据
+	// pageSize <= 0 时获取所有可用数据（最多 maxPages 页）
+	for (pageSize <= 0 || len(allBooks) < pageSize) && maxPages > 0 {
+		maxPages--
+
+		// 构建 URL（使用实际页码）
+		resolvedURL, err := wb.buildExploreURL(source, rawURL, currentPage)
+		if err != nil {
+			if len(allBooks) > 0 {
+				break // 已有数据，停止翻页
+			}
+			return nil, err
+		}
+		lastURL = resolvedURL
+
+		// 如果有搜索关键词，尝试用搜索 URL 而不是 explore URL
+		fetchMethod := "GET"
+		fetchBody := ""
+		if strings.TrimSpace(search) != "" && currentPage == page {
+			searchURL, method, body, err := wb.buildExploreSearchURL(source, search, currentPage)
+			if err == nil && searchURL != "" {
+				resolvedURL = searchURL
+				lastURL = resolvedURL
+				fetchMethod = method
+				fetchBody = body
+			}
+		}
+
+		wb.concurrent.SourceWait(source.ID)
+		resp, err := wb.fetch(ctx, source, resolvedURL, fetchMethod, fetchBody)
+		if err != nil {
+			if len(allBooks) > 0 {
+				break // 已有数据，停止翻页
+			}
+			return nil, err
+		}
+
+		// 自动检测JSON响应
+		respMode := mode
+		if strings.HasPrefix(strings.TrimSpace(resp.Body), "{") || strings.HasPrefix(strings.TrimSpace(resp.Body), "[") {
+			respMode = rule.ModeJSONPath
+		}
+		books, err := wb.parseListPageWithRules(ctx, source, resp.Body, resp.URL, ruleText, respMode)
+		if err != nil {
+			if len(allBooks) > 0 {
+				break // 已有数据，停止翻页
+			}
+			return nil, err
+		}
+
+		if len(books) == 0 {
+			break // 没有更多数据
+		}
+
+		allBooks = append(allBooks, books...)
+		currentPage++
 	}
-	books, err := wb.parseListPageWithRules(ctx, source, resp.Body, resp.URL, ruleText, mode)
-	if err != nil {
-		return nil, err
-	}
+
+	books := allBooks
 
 	// 应用搜索/分类筛选（如果指定了关键词）
 	if strings.TrimSpace(search) != "" {
@@ -296,33 +330,22 @@ func (wb *WebBook) ExploreSearch(ctx context.Context, source *BookSource, tab st
 
 	// 分页逻辑：
 	// - pageSize <= 0 时，返回全部书籍（不分页）
-	// - pageSize > 0 时，按 pageSize 分页
+	// - pageSize > 0 时，返回前 pageSize 条数据
 	total := len(books)
 	var hasMore bool
-	if pageSize > 0 {
-		start := (page - 1) * pageSize
-		if start < 0 {
-			start = 0
-		}
-		if start > len(books) {
-			start = len(books)
-		}
-		end := start + pageSize
-		if end > len(books) {
-			end = len(books)
-		}
-		books = books[start:end]
-		hasMore = end < total
-	} else {
-		// pageSize <= 0 返回全部，hasMore 根据是否有下一页参数判断
-		hasMore = true // 客户端可以自行控制，或者根据页码判断
+	if pageSize > 0 && len(books) > pageSize {
+		books = books[:pageSize]
+		hasMore = true // 可能还有更多数据
+	} else if pageSize > 0 {
+		// 检查是否还有下一页（通过尝试获取下一页）
+		hasMore = len(books) >= pageSize && maxPages == 0
 	}
 
 	return &ExploreSearchResult{
 		SourceID:   source.ID,
 		SourceName: source.Name,
 		Tab:        resolvedTab,
-		URL:        resolvedURL,
+		URL:        lastURL,
 		Tabs:       tabs,
 		Books:      books,
 		Page:       page,

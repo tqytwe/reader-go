@@ -32,10 +32,11 @@ func getExplore(c *gin.Context) {
 	}
 	// pageSize = 0 表示不分页，返回全部
 	if pageSize < 0 {
-		pageSize = 30
+		pageSize = 0 // 不限制，获取所有可用数据
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	// 移除 pageSize 上限限制，让后端自动翻页获取足够数据
+	if pageSize > 1000 {
+		pageSize = 1000 // 设置一个合理的上限防止过度请求
 	}
 
 	if sourceID == 0 {

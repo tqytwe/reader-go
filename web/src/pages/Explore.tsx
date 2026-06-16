@@ -203,7 +203,7 @@ export default function Explore() {
               pageSize={pageSize}
               total={total}
               showSizeChanger
-              pageSizeOptions={['30', '60', '90']}
+              pageSizeOptions={['30', '60', '100', '200', '500']}
               onChange={(nextPage, nextPageSize) => {
                 setPage(nextPage)
                 if (nextPageSize !== pageSize) {
