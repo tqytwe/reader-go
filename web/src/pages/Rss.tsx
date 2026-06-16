@@ -179,6 +179,30 @@ export default function Rss() {
     )
   }
 
+  // Select all filtered feeds
+  const handleSelectAll = () => {
+    const allIds = filteredFeeds.map(f => f.id)
+    setSelectedFeedIds(allIds)
+  }
+
+  // Deselect all
+  const handleDeselectAll = () => {
+    setSelectedFeedIds([])
+  }
+
+  // Invert selection
+  const handleInvertSelection = () => {
+    const currentSet = new Set(selectedFeedIds)
+    const newSelection = filteredFeeds
+      .filter(f => !currentSet.has(f.id))
+      .map(f => f.id)
+    setSelectedFeedIds(newSelection)
+  }
+
+  // Check if all filtered feeds are selected
+  const allSelected = filteredFeeds.length > 0 && filteredFeeds.every(f => selectedFeedIds.includes(f.id))
+  const someSelected = selectedFeedIds.length > 0 && !allSelected
+
   // Refresh feed
   const handleRefreshFeed = async (feed: RssFeed) => {
     setFetchingFeed(feed.id)
@@ -294,14 +318,34 @@ export default function Rss() {
         <div className="p-4 border-b bg-white">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold">RSS 订阅</h2>
-            {selectedFeedIds.length > 0 && (
-              <button
-                onClick={handleBatchDeleteFeeds}
-                className="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600"
-              >
-                批量删除 ({selectedFeedIds.length})
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {filteredFeeds.length > 0 && (
+                <>
+                  <button
+                    onClick={allSelected ? handleDeselectAll : handleSelectAll}
+                    className="px-2 py-1 text-xs border rounded hover:bg-gray-100"
+                  >
+                    {allSelected ? '取消全选' : '全选'}
+                  </button>
+                  {someSelected && (
+                    <button
+                      onClick={handleInvertSelection}
+                      className="px-2 py-1 text-xs border rounded hover:bg-gray-100"
+                    >
+                      反选
+                    </button>
+                  )}
+                </>
+              )}
+              {selectedFeedIds.length > 0 && (
+                <button
+                  onClick={handleBatchDeleteFeeds}
+                  className="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600"
+                >
+                  批量删除 ({selectedFeedIds.length})
+                </button>
+              )}
+            </div>
           </div>
 
           {/* 搜索订阅源 */}

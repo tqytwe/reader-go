@@ -45,6 +45,7 @@ export default function Explore() {
   const [pageSize, setPageSize] = useState(30)
   const [total, setTotal] = useState(0)
   const [hasMore, setHasMore] = useState(false)
+  const [error, setError] = useState<string>('')
   const { isBookInShelf } = useShelfStore()
   const { addShelfBook } = useStore()
   const requestIdRef = useRef(0)
@@ -52,7 +53,8 @@ export default function Explore() {
   useEffect(() => {
     api.getBookSources().then((data: unknown) => {
       const arr = Array.isArray(data) ? data : []
-      const list = (arr as { id: number; name: string; exploreUrl?: string }[]).filter((s) => s.exploreUrl)
+      // 显示所有启用的书源（后端有 fallback 支持只有 baseUrl 的书源）
+      const list = (arr as { id: number; name: string; enabled?: boolean }[]).filter((s) => s.enabled !== false)
       setSources(list)
       if (list[0]) setSourceId(list[0].id)
     }).catch(() => {
@@ -72,6 +74,7 @@ export default function Explore() {
     if (!sourceId) return
     const thisId = ++requestIdRef.current
     setLoading(true)
+    setError('')
     try {
       const res = (await api.getExplore(sourceId, tab || undefined, page, pageSize)) as ExploreResponse
       // Ignore stale responses caused by race conditions
@@ -85,7 +88,8 @@ export default function Explore() {
     } catch (e: unknown) {
       // Ignore stale responses caused by race conditions
       if (thisId !== requestIdRef.current) return
-      message.error(e instanceof Error ? e.message : '加载失败')
+      const errMsg = e instanceof Error ? e.message : '加载失败'
+      setError(errMsg)
       setBooks([])
       setTabs([])
       setTotal(0)
@@ -104,6 +108,7 @@ export default function Explore() {
     setPage(1)
     setTotal(0)
     setHasMore(false)
+    setError('')
   }, [sourceId])
 
   useEffect(() => {
@@ -154,8 +159,19 @@ export default function Explore() {
 
       {loading ? (
         <div className="py-16 text-center"><Spin tip="解析书海中..." /></div>
+      ) : !sources || sources.length === 0 ? (
+        <Empty description="暂无可用书源，请先在书源管理中添加或导入书源" />
       ) : !books || books.length === 0 ? (
-        <Empty description="暂无书单，请确认书源含 exploreUrl / exploreRule" />
+        <div className="py-8">
+          <Empty description={error ? `当前书源无法加载：${error}` : '当前书源暂无书单数据，请尝试切换书源或分类'} />
+          {error && error.includes('searchRule') && (
+            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-center">
+              <p className="text-yellow-800 text-sm">
+                💡 此书源缺少解析规则（exploreRule / searchRule），请在书源管理中编辑补充规则后再试。
+              </p>
+            </div>
+          )}
+        </div>
       ) : (
         <div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
