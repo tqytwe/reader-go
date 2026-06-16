@@ -41,12 +41,23 @@ func ResolveExploreURL(exploreURL, tab string) (resolved string, tabs []ExploreT
 
 	// 1. 支持JSON数组格式（兼容单引号、双引号）
 	if strings.HasPrefix(exploreURL, "[") {
-		// 先处理单引号JSON，替换成双引号
-		normalized := regexp.MustCompile(`'([^']*)'`).ReplaceAllString(exploreURL, `"$1"`)
-		// 处理多余的换行和空格
-		normalized = strings.ReplaceAll(normalized, "\n", "")
-		normalized = strings.ReplaceAll(normalized, "\t", "")
-		if err := json.Unmarshal([]byte(normalized), &tabs); err == nil && len(tabs) > 0 {
+		// 先尝试直接解析（保留原始转义）
+		cleaned := strings.ReplaceAll(exploreURL, "\n", "")
+		cleaned = strings.ReplaceAll(cleaned, "\t", "")
+		cleaned = strings.TrimSpace(cleaned)
+		// 将 null 替换为空字符串，避免解析失败
+		cleaned = regexp.MustCompile(`:\s*null`).ReplaceAllString(cleaned, `:""`)
+		if err := json.Unmarshal([]byte(cleaned), &tabs); err != nil || len(tabs) == 0 {
+			// 直接解析失败，尝试单引号替换
+			normalized := regexp.MustCompile(`'([^']*)'`).ReplaceAllString(cleaned, `"$1"`)
+			if err := json.Unmarshal([]byte(normalized), &tabs); err == nil && len(tabs) > 0 {
+				// 成功
+			} else {
+				// JSON解析失败，返回错误而不是原始字符串
+				return "", nil, "", fmt.Errorf("invalid JSON tabs: %v", err)
+			}
+		}
+		if len(tabs) > 0 {
 			// 处理URL中的变量占位符
 			for i := range tabs {
 				tabs[i].URL = strings.ReplaceAll(tabs[i].URL, "&amp;", "&")
@@ -305,7 +316,17 @@ func (wb *WebBook) ExploreSearch(ctx context.Context, source *BookSource, tab st
 		return nil, fmt.Errorf("source is nil")
 	}
 
-	rawURL, tabs, resolvedTab, err := ResolveExploreURL(source.ExploreURL, tab)
+	// 处理 @js: 前缀：先执行 JavaScript 获取实际的 URL/tabs
+	exploreURL := source.ExploreURL
+	if strings.HasPrefix(exploreURL, "@js:") {
+		jsResult, err := wb.evalJSURL(source, exploreURL, map[string]string{"page": strconv.Itoa(page)})
+		if err != nil {
+			return nil, fmt.Errorf("evalJSURL failed: %w", err)
+		}
+		exploreURL = jsResult
+	}
+
+	rawURL, tabs, resolvedTab, err := ResolveExploreURL(exploreURL, tab)
 	if err != nil {
 		return nil, err
 	}
