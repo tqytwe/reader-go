@@ -33,22 +33,42 @@ func parseLegadoFieldRules(rule string) map[string]string {
 	if rule == "" {
 		return out
 	}
-	// 1. 尝试解析JSON格式（兼容单引号）
+	// 1. 尝试解析JSON格式
 	if strings.HasPrefix(rule, "{") {
-		// 单引号JSON替换成双引号
-		normalized := regexp.MustCompile(`'([^']*)'`).ReplaceAllString(rule, `"$1"`)
+		// 先尝试直接解析（保留原始转义）
 		var m map[string]string
-		if err := json.Unmarshal([]byte(normalized), &m); err == nil {
+		if err := json.Unmarshal([]byte(rule), &m); err == nil {
 			return m
 		}
 		var anyMap map[string]interface{}
-		if err := json.Unmarshal([]byte(normalized), &anyMap); err == nil {
+		if err := json.Unmarshal([]byte(rule), &anyMap); err == nil {
 			for k, v := range anyMap {
 				if s, ok := v.(string); ok {
 					out[k] = s
 				}
 			}
-			return out
+			if len(out) > 0 {
+				return out
+			}
+		}
+		// 直接解析失败，尝试单引号替换（用于非标准JSON）
+		// 注意：这可能破坏包含单引号的JavaScript代码
+		normalized := regexp.MustCompile(`'([^']*)'`).ReplaceAllString(rule, `"$1"`)
+		if normalized != rule {
+			out = make(map[string]string)
+			if err := json.Unmarshal([]byte(normalized), &m); err == nil {
+				return m
+			}
+			if err := json.Unmarshal([]byte(normalized), &anyMap); err == nil {
+				for k, v := range anyMap {
+					if s, ok := v.(string); ok {
+						out[k] = s
+					}
+				}
+				if len(out) > 0 {
+					return out
+				}
+			}
 		}
 	}
 	// 2. 尝试解析键值对格式

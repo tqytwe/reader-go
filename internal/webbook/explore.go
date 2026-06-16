@@ -311,8 +311,19 @@ func (wb *WebBook) ExploreSearch(ctx context.Context, source *BookSource, tab st
 	}
 
 	ruleText := strings.TrimSpace(source.ExploreRule)
-	if ruleText == "" {
+	// 如果 exploreRule 为空或解析后没有 bookList，回退到 searchRule
+	if ruleText == "" || ruleText == "{}" {
 		ruleText = source.SearchRule
+	} else {
+		// 检查解析后是否有 bookList 字段
+		rules := parseLegadoFieldRules(ruleText)
+		if _, hasBookList := rules["bookList"]; !hasBookList {
+			// 没有 bookList，尝试使用 searchRule
+			searchRules := parseLegadoFieldRules(source.SearchRule)
+			if _, hasSearchBookList := searchRules["bookList"]; hasSearchBookList {
+				ruleText = source.SearchRule
+			}
+		}
 	}
 	mode := wb.modeForExplore(source)
 
