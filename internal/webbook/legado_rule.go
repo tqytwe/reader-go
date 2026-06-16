@@ -533,6 +533,8 @@ func findLegadoByText(sel *goquery.Selection, needle string) *goquery.Selection 
 
 func legadoStepToCSS(step string) (string, int) {
 	idx := legadoIdxAll
+	// 移除 - 前缀（Legado 语法，表示从根元素选择）
+	step = strings.TrimPrefix(step, "-")
 	// 先检查排除语法 !N
 	if m := legadoExcludeSuffix.FindStringSubmatch(step); m != nil {
 		step = m[1]
