@@ -161,6 +161,27 @@ func deleteBookSource(c *gin.Context) {
 	ok(c, gin.H{"deleted": true})
 }
 
+func batchDeleteBookSources(c *gin.Context) {
+	var req struct {
+		IDs []int64 `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errResp(c, 400, "invalid request: ids is required")
+		return
+	}
+	if len(req.IDs) == 0 {
+		errResp(c, 400, "ids is empty")
+		return
+	}
+	deleted, err := app.BookSourceSvc.DeleteBatch(req.IDs)
+	if err != nil {
+		errRespInternal(c, err)
+		return
+	}
+	reloadWebBookSources()
+	ok(c, gin.H{"deleted": deleted})
+}
+
 func importBookSources(c *gin.Context) {
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -391,6 +412,16 @@ func searchBooks(c *gin.Context) {
 		return
 	}
 
+	// 如果result为nil（超时或取消），返回空结果
+	if result == nil {
+		ok(c, gin.H{
+			"query":   q,
+			"results": make([]*booksource.BookSearchResult, 0),
+			"total":   0,
+		})
+		return
+	}
+
 	books := result.Books
 	if len(books) > limit {
 		books = books[:limit]
@@ -403,7 +434,7 @@ func searchBooks(c *gin.Context) {
 	// #endregion
 
 	// Convert webbook.Book to booksource.BookSearchResult
-	var results []*booksource.BookSearchResult
+	results := make([]*booksource.BookSearchResult, 0)
 	for _, b := range books {
 		if strings.TrimSpace(b.BookURL) == "" {
 			continue
@@ -520,7 +551,7 @@ func getBookToc(c *gin.Context) {
 	}
 
 	// Convert webbook.BookChapter to booksource.Chapter
-	var chapters []booksource.Chapter
+	chapters := make([]booksource.Chapter, 0)
 	for _, ch := range chapterList.Chapters {
 		chapters = append(chapters, booksource.Chapter{
 			Name: ch.Title,
@@ -1079,6 +1110,10 @@ func getRSSFeedItems(c *gin.Context) {
 	if err != nil {
 		errRespInternal(c, err)
 		return
+	}
+	// 确保items不是nil，返回空数组而不是null
+	if items == nil {
+		items = make([]*rss.FeedItem, 0)
 	}
 	ok(c, gin.H{
 		"items":    items,

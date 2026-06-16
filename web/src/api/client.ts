@@ -59,6 +59,8 @@ export const api = {
     enabled?: boolean
     enableOnlyNonJS?: boolean
   }) => client.post('/bookSources/batch/enable', payload),
+  batchDeleteBookSources: (ids: number[]) =>
+    client.post('/bookSources/batch/delete', { ids }),
 
   // RSS
   importRssSourceCollection: (url: string) => client.post('/rss/import/collection', { url }),

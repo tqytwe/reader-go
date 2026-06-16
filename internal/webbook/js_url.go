@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"strings"
 
 	"reader-go/internal/rule"
@@ -87,7 +88,7 @@ func (e *webbookJSExtensions) Md5Encode(str string) string {
 }
 
 func (e *webbookJSExtensions) Log(msg string) {
-	fmt.Printf("[js-booksource:%s] %s\n", e.source.Name, msg)
+	log.Printf("[js-booksource:%s] %s", e.source.Name, msg)
 }
 
 type wbCookieExt struct{ store map[string]string }

@@ -48,6 +48,7 @@ export default function Bookshelf() {
   const [alternates, setAlternates] = useState<BookAlternateCandidate[]>([])
   const [alternatesLoading, setAlternatesLoading] = useState(false)
   const [switching, setSwitching] = useState(false)
+  const [selectedBookKeys, setSelectedBookKeys] = useState<string[]>([])
 
   // 从 store 加载书架数据
   useEffect(() => {
@@ -136,6 +137,49 @@ export default function Bookshelf() {
         }
       },
     })
+  }
+
+  // 批量移除书架
+  const handleBatchRemove = () => {
+    if (selectedBookKeys.length === 0) {
+      message.warning('请先选择要移除的书籍')
+      return
+    }
+    Modal.confirm({
+      title: '批量移除',
+      content: `确定要将选中的 ${selectedBookKeys.length} 本书从书架移除吗？`,
+      okText: '确认移除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await Promise.all(selectedBookKeys.map(key => removeBook(key)))
+          setSelectedBookKeys([])
+          message.success(`已移除 ${selectedBookKeys.length} 本书`)
+        } catch {
+          message.error('批量移除失败')
+        }
+      },
+    })
+  }
+
+  // 切换书籍选择
+  const toggleBookSelection = (bookKey: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSelectedBookKeys(prev =>
+      prev.includes(bookKey)
+        ? prev.filter(k => k !== bookKey)
+        : [...prev, bookKey]
+    )
+  }
+
+  // 全选/取消全选
+  const toggleSelectAll = () => {
+    if (selectedBookKeys.length === filteredBooks.length) {
+      setSelectedBookKeys([])
+    } else {
+      setSelectedBookKeys(filteredBooks.map(b => b.bookKey))
+    }
   }
 
   // 进入阅读器（SPA 路由，避免整页刷新导致报错）
@@ -292,6 +336,22 @@ export default function Bookshelf() {
             已读完
           </Button>
         </div>
+        {books.length > 0 && (
+          <Button
+            onClick={toggleSelectAll}
+          >
+            {selectedBookKeys.length === filteredBooks.length ? '取消全选' : '全选'}
+          </Button>
+        )}
+        {selectedBookKeys.length > 0 && (
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            onClick={handleBatchRemove}
+          >
+            批量移除 ({selectedBookKeys.length})
+          </Button>
+        )}
         <Dropdown
           menu={{
             items: allMenuItems,
@@ -367,12 +427,24 @@ export default function Bookshelf() {
             <Card
               key={book.bookKey}
               hoverable
-              className="overflow-hidden group"
+              className={`overflow-hidden group relative ${selectedBookKeys.includes(book.bookKey) ? 'ring-2 ring-blue-500' : ''}`}
               cover={
                 <div
                   className="aspect-[2/3] bg-gradient-to-br from-blue-100 to-purple-100 cursor-pointer relative overflow-hidden"
                   onClick={() => handleGoReader(book.bookKey)}
                 >
+                  {/* 选择框 */}
+                  <div
+                    className="absolute top-2 left-2 z-10"
+                    onClick={(e) => toggleBookSelection(book.bookKey, e)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedBookKeys.includes(book.bookKey)}
+                      className="w-4 h-4 cursor-pointer"
+                      onChange={() => {}}
+                    />
+                  </div>
                   {book.coverUrl ? (
                     <img
                       src={book.coverUrl}

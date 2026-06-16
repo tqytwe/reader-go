@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -173,6 +174,26 @@ func (s *Service) Delete(id int64) error {
 		return fmt.Errorf("book source %d not found", id)
 	}
 	return nil
+}
+
+// DeleteBatch 批量删除书源
+func (s *Service) DeleteBatch(ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	// 构建 IN 子句占位符
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf("DELETE FROM book_sources WHERE id IN (%s)", strings.Join(placeholders, ","))
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("batch delete book sources: %w", err)
+	}
+	return result.RowsAffected()
 }
 
 // Import 批量导入书源（兼容旧签名）

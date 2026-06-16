@@ -570,43 +570,23 @@ func (wb *WebBook) ExploreSearchFallback(ctx context.Context, source *BookSource
 		homeURL = "https://" + homeURL
 	}
 
-	fmt.Printf("[DEBUG-FALLBACK] Source %s: Fetching homepage %s\n", source.ID, homeURL)
-
 	// 获取首页内容
 	resp, err := wb.fetch(ctx, source, homeURL, "GET", "")
 	if err != nil {
-		fmt.Printf("[DEBUG-FALLBACK] Source %s: Fetch failed: %v\n", source.ID, err)
 		return nil, err
-	}
-
-	fmt.Printf("[DEBUG-FALLBACK] Source %s: Fetched %d bytes\n", source.ID, len(resp.Body))
-
-	// 保存HTML样本用于调试
-	if len(resp.Body) > 0 {
-		sample := resp.Body
-		if len(sample) > 2000 {
-			sample = sample[:2000]
-		}
-		fmt.Printf("[DEBUG-FALLBACK] Source %s: HTML sample:\n%s\n", source.ID, sample)
 	}
 
 	// 使用 searchRule 解析首页（如果有的话）
 	ruleText := strings.TrimSpace(source.SearchRule)
 	if ruleText == "" {
-		fmt.Printf("[DEBUG-FALLBACK] Source %s: No searchRule\n", source.ID)
 		return nil, fmt.Errorf("source has no searchRule for parsing")
 	}
-
-	fmt.Printf("[DEBUG-FALLBACK] Source %s: Parsing with searchRule: %s\n", source.ID, ruleText[:min(100, len(ruleText))])
 
 	rules := parseLegadoFieldRules(ruleText)
 	books, err := parseLegadoSearchResults(resp.Body, resp.URL, source.ID, source.Name, rules)
 	if err != nil {
-		fmt.Printf("[DEBUG-FALLBACK] Source %s: Parse failed: %v\n", source.ID, err)
 		return nil, err
 	}
-
-	fmt.Printf("[DEBUG-FALLBACK] Source %s: Parsed %d books\n", source.ID, len(books))
 
 	// 分页处理
 	start := (page - 1) * pageSize
@@ -619,8 +599,6 @@ func (wb *WebBook) ExploreSearchFallback(ctx context.Context, source *BookSource
 		}
 		books = books[start:end]
 	}
-
-	fmt.Printf("[DEBUG-FALLBACK] Source %s: After pagination: %d books\n", source.ID, len(books))
 
 	// 构建返回结果
 	result := &ExploreSearchResult{

@@ -90,6 +90,7 @@ export default function BookSourceManage() {
   const [batchLoading, setBatchLoading] = useState(false)
   const [sourceStats, setSourceStats] = useState<Record<number, SourceStat>>({})
   const [rawSources, setRawSources] = useState<BookSourceDTO[]>([])
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
 
   // 加载书源列表
   const fetchBookSources = async () => {
@@ -246,6 +247,34 @@ export default function BookSourceManage() {
     } catch {
       message.error('删除失败')
     }
+  }
+
+  // 批量删除书源
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的书源')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 个书源吗？此操作不可恢复。`,
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          const ids = selectedRowKeys.map(k => Number(k))
+          await api.batchDeleteBookSources(ids)
+          // 从本地状态移除
+          ids.forEach(id => removeBookSource(String(id)))
+          setSelectedRowKeys([])
+          message.success(`已删除 ${ids.length} 个书源`)
+          await fetchBookSources()
+        } catch {
+          message.error('批量删除失败')
+        }
+      },
+    })
   }
 
   // 切换启用状态
@@ -532,6 +561,14 @@ export default function BookSourceManage() {
               批量启用/禁用
             </Button>
           </Dropdown>
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            onClick={handleBatchDelete}
+            disabled={selectedRowKeys.length === 0}
+          >
+            批量删除 {selectedRowKeys.length > 0 && `(${selectedRowKeys.length})`}
+          </Button>
           <Button icon={<LinkOutlined />} onClick={() => setCollectionModalVisible(true)}>
             链接导入
           </Button>
@@ -600,6 +637,10 @@ export default function BookSourceManage() {
         dataSource={filteredSources}
         rowKey="id"
         loading={bookSourcesLoading}
+        rowSelection={{
+          selectedRowKeys,
+          onChange: (keys) => setSelectedRowKeys(keys),
+        }}
         pagination={{
           defaultPageSize: 10,
           showSizeChanger: true,

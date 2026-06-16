@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { rssApi, RssFeed, RssItem, RssItemsResponse, RssPreviewResult } from '../api/client'
-import { message } from 'antd'
+import { message, Modal, Input } from 'antd'
+import { SearchOutlined } from '@ant-design/icons'
 
 export default function Rss() {
   const [feeds, setFeeds] = useState<RssFeed[]>([])
@@ -20,6 +21,8 @@ export default function Rss() {
   const [itemsPageSize, setItemsPageSize] = useState(20)
   const [itemsTotal, setItemsTotal] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [feedSearch, setFeedSearch] = useState('')
+  const [selectedFeedIds, setSelectedFeedIds] = useState<number[]>([])
 
   // Load feeds
   useEffect(() => {
@@ -50,9 +53,19 @@ export default function Rss() {
   // Filtered feeds
   const filteredFeeds = useMemo(() => {
     if (!feeds) return []
-    if (groupFilter === 'all') return feeds
-    return feeds.filter(f => (f.group || 'Default') === groupFilter)
-  }, [feeds, groupFilter])
+    let result = feeds
+    if (groupFilter !== 'all') {
+      result = result.filter(f => (f.group || 'Default') === groupFilter)
+    }
+    if (feedSearch.trim()) {
+      const q = feedSearch.toLowerCase()
+      result = result.filter(f =>
+        (f.title || '').toLowerCase().includes(q) ||
+        (f.feedUrl || '').toLowerCase().includes(q)
+      )
+    }
+    return result
+  }, [feeds, groupFilter, feedSearch])
 
   // 链接导入订阅源合集
   const handleImportCollection = async () => {
@@ -97,22 +110,73 @@ export default function Rss() {
 
   // Delete feed
   const handleDeleteFeed = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this feed?')) return
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除这个订阅源吗？',
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await rssApi.deleteRssFeed(id)
+          if (selectedFeed?.id === id) {
+            setSelectedFeed(null)
+            setItems([])
+            setPreview(null)
+            setItemsTotal(0)
+          }
+          await loadFeeds()
+          message.success('已删除')
+        } catch (err) {
+          setError('删除订阅源失败')
+          message.error('删除订阅源失败')
+          console.error(err)
+        }
+      },
+    })
+  }
 
-    try {
-      await rssApi.deleteRssFeed(id)
-      if (selectedFeed?.id === id) {
-        setSelectedFeed(null)
-        setItems([])
-        setPreview(null)
-        setItemsTotal(0)
-      }
-      await loadFeeds()
-    } catch (err) {
-      setError('删除订阅源失败')
-      message.error('删除订阅源失败')
-      console.error(err)
+  // Batch delete feeds
+  const handleBatchDeleteFeeds = () => {
+    if (selectedFeedIds.length === 0) {
+      message.warning('请先选择要删除的订阅源')
+      return
     }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedFeedIds.length} 个订阅源吗？`,
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await Promise.all(selectedFeedIds.map(id => rssApi.deleteRssFeed(id)))
+          if (selectedFeedIds.includes(selectedFeed?.id ?? -1)) {
+            setSelectedFeed(null)
+            setItems([])
+            setPreview(null)
+            setItemsTotal(0)
+          }
+          setSelectedFeedIds([])
+          message.success(`已删除 ${selectedFeedIds.length} 个订阅源`)
+          await loadFeeds()
+        } catch (err) {
+          setError('批量删除失败')
+          message.error('批量删除失败')
+          console.error(err)
+        }
+      },
+    })
+  }
+
+  // Toggle feed selection
+  const toggleFeedSelection = (feedId: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSelectedFeedIds(prev =>
+      prev.includes(feedId)
+        ? prev.filter(id => id !== feedId)
+        : [...prev, feedId]
+    )
   }
 
   // Refresh feed
@@ -215,10 +279,11 @@ export default function Rss() {
     const diff = now.getTime() - date.getTime()
     const days = Math.floor(diff / (1000 * 60 * 60 * 24))
 
-    if (days === 0) return 'Today'
-    if (days === 1) return 'Yesterday'
-    if (days < 7) return `${days} days ago`
-    return date.toLocaleDateString()
+    if (days === 0) return '今天'
+    if (days === 1) return '昨天'
+    if (days < 7) return `${days} 天前`
+    if (days < 30) return `${Math.floor(days / 7)} 周前`
+    return date.toLocaleDateString('zh-CN')
   }
 
   return (
@@ -227,7 +292,29 @@ export default function Rss() {
       <div className="w-80 border-r bg-gray-50 flex flex-col">
         {/* Header */}
         <div className="p-4 border-b bg-white">
-          <h2 className="text-lg font-semibold mb-3">RSS 订阅</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">RSS 订阅</h2>
+            {selectedFeedIds.length > 0 && (
+              <button
+                onClick={handleBatchDeleteFeeds}
+                className="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600"
+              >
+                批量删除 ({selectedFeedIds.length})
+              </button>
+            )}
+          </div>
+
+          {/* 搜索订阅源 */}
+          <div className="mb-3">
+            <Input
+              placeholder="搜索订阅源..."
+              prefix={<SearchOutlined />}
+              allowClear
+              size="small"
+              value={feedSearch}
+              onChange={(e) => setFeedSearch(e.target.value)}
+            />
+          </div>
 
           {/* 链接导入合集 */}
           <div className="flex gap-2 mb-3">
@@ -244,7 +331,7 @@ export default function Rss() {
               onClick={handleImportCollection}
               className="px-3 py-2 bg-green-500 text-white rounded-lg text-sm hover:bg-green-600 disabled:opacity-50 whitespace-nowrap"
             >
-              {importingCollection ? '...' : '链接导入'}
+              {importingCollection ? '...' : '合集导入'}
             </button>
           </div>
 
@@ -254,7 +341,7 @@ export default function Rss() {
               type="url"
               value={newFeedUrl}
               onChange={(e) => setNewFeedUrl(e.target.value)}
-              placeholder="Enter feed URL..."
+              placeholder="输入订阅源 URL..."
               className="flex-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <button
@@ -262,7 +349,7 @@ export default function Rss() {
               disabled={addingFeed}
               className="px-3 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 disabled:opacity-50"
             >
-              {addingFeed ? '...' : '+'}
+              {addingFeed ? '...' : '添加'}
             </button>
           </form>
 
@@ -274,7 +361,7 @@ export default function Rss() {
           >
             {groups.map(group => (
               <option key={group} value={group}>
-                {group === 'all' ? 'All Groups' : group}
+                {group === 'all' ? '全部分组' : group}
               </option>
             ))}
           </select>
@@ -290,10 +377,10 @@ export default function Rss() {
         {/* Feed List */}
         <div className="flex-1 overflow-y-auto">
           {loading ? (
-            <div className="p-4 text-center text-gray-500">Loading...</div>
+            <div className="p-4 text-center text-gray-500">加载中...</div>
           ) : filteredFeeds.length === 0 ? (
             <div className="p-4 text-center text-gray-500">
-              No feeds found. Add a feed to get started.
+              {feedSearch ? '未找到匹配的订阅源' : '暂无订阅源，请添加'}
             </div>
           ) : (
             <div className="divide-y">
@@ -302,18 +389,26 @@ export default function Rss() {
                   key={feed.id}
                   className={`p-3 hover:bg-gray-100 cursor-pointer transition ${
                     selectedFeed?.id === feed.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''
-                  }`}
+                  } ${selectedFeedIds.includes(feed.id) ? 'bg-blue-50' : ''}`}
                   onClick={() => handleSelectFeed(feed)}
                 >
                   <div className="flex items-start justify-between">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-sm truncate">{feed.title || 'Untitled'}</h3>
-                      <p className="text-xs text-gray-500 truncate mt-1">{feed.feedUrl}</p>
-                      {feed.group && (
-                        <span className="inline-block mt-1 px-2 py-0.5 bg-gray-200 rounded text-xs">
-                          {feed.group}
-                        </span>
-                      )}
+                    <div className="flex items-start gap-2 flex-1 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={selectedFeedIds.includes(feed.id)}
+                        onClick={(e) => toggleFeedSelection(feed.id, e)}
+                        className="mt-1 cursor-pointer"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-medium text-sm truncate">{feed.title || 'Untitled'}</h3>
+                        <p className="text-xs text-gray-500 truncate mt-1">{feed.feedUrl}</p>
+                        {feed.group && (
+                          <span className="inline-block mt-1 px-2 py-0.5 bg-gray-200 rounded text-xs">
+                            {feed.group}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-1 ml-2">
                       <button
@@ -510,7 +605,7 @@ export default function Rss() {
                                   onClick={() => handleMarkRead(item.id)}
                                   className="text-xs text-blue-600 hover:text-blue-700"
                                 >
-                                  Mark as read
+                                  标记已读
                                 </button>
                               )}
                               <button
@@ -520,7 +615,7 @@ export default function Rss() {
                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                                 </svg>
-                                Open link
+                                打开链接
                               </button>
                             </div>
                           </div>
@@ -567,7 +662,7 @@ export default function Rss() {
               <svg className="w-16 h-16 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
               </svg>
-              <p>Select a feed to view items</p>
+              <p>选择左侧订阅源查看文章</p>
             </div>
           </div>
         )}

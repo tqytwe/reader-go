@@ -325,3 +325,87 @@ export const useStore = create<AppState>((set) => ({
     useShelfStore.getState().setBooks(data?.books ?? [])
   },
 }))
+
+// ===== Lock Store (密码锁屏) =====
+const LOCK_STORAGE_KEY = 'reader_go_lock'
+const LOCK_SESSION_KEY = 'reader_go_unlocked'
+
+async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(password + '_reader_go_salt')
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+export interface LockState {
+  /** 是否已设置密码 */
+  isPasswordSet: boolean
+  /** 密码哈希 */
+  passwordHash: string | null
+
+  /** 设置密码 */
+  setPassword: (password: string) => Promise<void>
+  /** 验证密码 */
+  verifyPassword: (password: string) => Promise<boolean>
+  /** 清除密码（关闭锁屏） */
+  clearPassword: () => void
+  /** 是否已解锁（session 级别） */
+  isUnlocked: () => boolean
+  /** 标记已解锁 */
+  unlock: () => void
+  /** 锁定 */
+  lock: () => void
+}
+
+export const useLockStore = create<LockState>()(
+  (set, get) => ({
+    isPasswordSet: false,
+    passwordHash: null,
+
+    setPassword: async (password) => {
+      const hash = await hashPassword(password)
+      localStorage.setItem(LOCK_STORAGE_KEY, JSON.stringify({ hash }))
+      set({ isPasswordSet: true, passwordHash: hash })
+    },
+
+    verifyPassword: async (password) => {
+      const hash = await hashPassword(password)
+      return hash === get().passwordHash
+    },
+
+    clearPassword: () => {
+      localStorage.removeItem(LOCK_STORAGE_KEY)
+      sessionStorage.removeItem(LOCK_SESSION_KEY)
+      set({ isPasswordSet: false, passwordHash: null })
+    },
+
+    isUnlocked: () => {
+      return sessionStorage.getItem(LOCK_SESSION_KEY) === '1'
+    },
+
+    unlock: () => {
+      sessionStorage.setItem(LOCK_SESSION_KEY, '1')
+    },
+
+    lock: () => {
+      sessionStorage.removeItem(LOCK_SESSION_KEY)
+    },
+  })
+)
+
+// 初始化锁屏状态
+function initLockState() {
+  try {
+    const stored = localStorage.getItem(LOCK_STORAGE_KEY)
+    if (stored) {
+      const { hash } = JSON.parse(stored)
+      if (hash) {
+        useLockStore.setState({ isPasswordSet: true, passwordHash: hash })
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+initLockState()

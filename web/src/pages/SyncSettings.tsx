@@ -1,15 +1,19 @@
 import { useState } from 'react'
-import { Card, Button, Upload, message, Typography, Alert, Space, Divider } from 'antd'
-import { CloudDownloadOutlined, CloudUploadOutlined, SyncOutlined } from '@ant-design/icons'
+import { Card, Button, Upload, message, Typography, Alert, Space, Divider, Input, Modal } from 'antd'
+import { CloudDownloadOutlined, CloudUploadOutlined, SyncOutlined, LockOutlined, DeleteOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import type { SyncBundle } from '../types/booksource'
-import { useShelfStore, type ShelfBook } from '../store/useStore'
+import { useShelfStore, type ShelfBook, useLockStore } from '../store/useStore'
 
 const { Paragraph, Text } = Typography
 
 export default function SyncSettings() {
   const [exporting, setExporting] = useState(false)
   const [importing, setImporting] = useState(false)
+  const { isPasswordSet, setPassword, clearPassword } = useLockStore()
+  const [pwdModalOpen, setPwdModalOpen] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPwd, setConfirmPwd] = useState('')
 
   const handleExport = async () => {
     setExporting(true)
@@ -97,6 +101,81 @@ export default function SyncSettings() {
           WebDAV 自动同步（sidecar）尚未接入；当前可通过导出/上传 JSON 手动同步。
         </Paragraph>
       </Card>
+
+      <Divider />
+
+      <Card title={<><LockOutlined /> 安全设置</>} className="mb-4">
+        <Paragraph type="secondary">
+          {isPasswordSet
+            ? '已设置访问密码。每次打开网站或关闭标签页后需要输入密码才能查看内容。'
+            : '设置访问密码后，每次打开网站需要输入密码才能查看内容。密码仅保存在本地浏览器中。'}
+        </Paragraph>
+        <Space>
+          {isPasswordSet ? (
+            <>
+              <Button icon={<LockOutlined />} onClick={() => setPwdModalOpen(true)}>
+                修改密码
+              </Button>
+              <Button danger icon={<DeleteOutlined />} onClick={() => {
+                Modal.confirm({
+                  title: '关闭密码锁',
+                  content: '确定要关闭密码保护吗？之后打开网站将不再需要密码。',
+                  onOk: () => {
+                    clearPassword()
+                    message.success('已关闭密码保护')
+                  },
+                })
+              }}>
+                关闭密码
+              </Button>
+            </>
+          ) : (
+            <Button type="primary" icon={<LockOutlined />} onClick={() => setPwdModalOpen(true)}>
+              设置密码
+            </Button>
+          )}
+        </Space>
+      </Card>
+
+      <Modal
+        title={isPasswordSet ? '修改密码' : '设置密码'}
+        open={pwdModalOpen}
+        onOk={async () => {
+          if (!newPassword || newPassword.length < 4) {
+            message.error('密码至少 4 个字符')
+            return
+          }
+          if (newPassword !== confirmPwd) {
+            message.error('两次输入的密码不一致')
+            return
+          }
+          await setPassword(newPassword)
+          message.success(isPasswordSet ? '密码已修改' : '密码已设置')
+          setPwdModalOpen(false)
+          setNewPassword('')
+          setConfirmPwd('')
+        }}
+        onCancel={() => {
+          setPwdModalOpen(false)
+          setNewPassword('')
+          setConfirmPwd('')
+        }}
+        okText="确认"
+        cancelText="取消"
+      >
+        <div className="space-y-3 pt-2">
+          <Input.Password
+            placeholder="新密码（至少4位）"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+          />
+          <Input.Password
+            placeholder="确认新密码"
+            value={confirmPwd}
+            onChange={(e) => setConfirmPwd(e.target.value)}
+          />
+        </div>
+      </Modal>
     </div>
   )
 }

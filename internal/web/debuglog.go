@@ -15,7 +15,6 @@ func agentDebugLog(location, message, hypothesisID, runID string, data map[strin
 		return
 	}
 	payload := map[string]interface{}{
-		"sessionId":    "2b32ea",
 		"location":     location,
 		"message":      message,
 		"hypothesisId": hypothesisID,

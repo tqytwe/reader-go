@@ -285,7 +285,9 @@ func (e *JsEngine) RegisterJavaCompat() {
 		url, _ := call.Argument(0).Export().(string)
 		res, err := ext.Ajax(url)
 		if err != nil {
-			panic(e.runtime.NewGoError(err))
+			// 返回空字符串而不是 panic，让 JS 代码处理错误
+			log.Printf("[JsEngine] ajax error for %s: %v", url, err)
+			return goja.Undefined()
 		}
 		return e.runtime.ToValue(res)
 	})
@@ -349,13 +351,34 @@ func (e *JsEngine) registerBuiltins() {
 // ============================================================================
 
 // RunString 执行 JS 代码字符串，返回结果
-func (e *JsEngine) RunString(script string) (goja.Value, error) {
+func (e *JsEngine) RunString(script string) (ret goja.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// 将 panic 转换为错误，防止服务器崩溃
+			if e, ok := r.(error); ok {
+				err = fmt.Errorf("js execution panic: %w", e)
+			} else {
+				err = fmt.Errorf("js execution panic: %v", r)
+			}
+		}
+	}()
 	return e.runtime.RunString(script)
 }
 
 // RunInContext 在指定上下文变量中执行 JS 代码
 // contextVars 会被临时设置到运行时，执行后恢复
-func (e *JsEngine) RunInContext(script string, contextVars map[string]interface{}) (goja.Value, error) {
+func (e *JsEngine) RunInContext(script string, contextVars map[string]interface{}) (ret goja.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// 将 panic 转换为错误，防止服务器崩溃
+			if e, ok := r.(error); ok {
+				err = fmt.Errorf("js execution panic: %w", e)
+			} else {
+				err = fmt.Errorf("js execution panic: %v", r)
+			}
+		}
+	}()
+
 	// 保存旧值
 	oldValues := make(map[string]interface{})
 	for k, v := range contextVars {
@@ -993,7 +1016,7 @@ func (d *defaultExtensions) Md5Encode(str string) string {
 
 // Log 实现
 func (d *defaultExtensions) Log(msg string) {
-	fmt.Printf("[ext] %s\n", msg)
+	log.Printf("[JsEngine] %s", msg)
 }
 
 // ============================================================================

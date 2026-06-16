@@ -13,6 +13,14 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
+      // 搜索流使用特殊配置
+      '/api/search/stream': {
+        target: 'http://localhost:6464',
+        changeOrigin: true,
+        timeout: 0,
+        proxyTimeout: 0,
+      },
+      // 其他API
       '/api': {
         target: 'http://localhost:6464',
         changeOrigin: true,

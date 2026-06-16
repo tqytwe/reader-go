@@ -260,33 +260,26 @@ func parseLegadoHTMLSearch(body, baseURL, sourceID, sourceName string, rules map
 		return nil, fmt.Errorf("missing bookList rule")
 	}
 
-	fmt.Printf("[DEBUG-PARSE] Parsing HTML with bookList rule: %s\n", bookListRule)
-
 	items, err := evalLegadoListItems(doc.Selection, bookListRule)
 	if err != nil {
-		fmt.Printf("[DEBUG-PARSE] evalLegadoListItems error: %v\n", err)
 		return nil, err
 	}
-
-	fmt.Printf("[DEBUG-PARSE] Found %d items\n", len(items))
 
 	if len(items) == 0 {
 		return nil, nil
 	}
 
 	books := make([]Book, 0, len(items))
-	for i, item := range items {
+	for _, item := range items {
 		book := Book{SourceID: sourceID, SourceName: sourceName}
 		if r := rules["name"]; r != "" {
 			book.Name = evalLegadoRule(item, r)
-			fmt.Printf("[DEBUG-PARSE] Item %d: name rule '%s' -> '%s'\n", i, r, book.Name)
 		}
 		if r := rules["author"]; r != "" {
 			book.Author = evalLegadoRule(item, r)
 		}
 		if r := rules["bookUrl"]; r != "" {
 			book.BookURL = resolveLegadoURL(evalLegadoRule(item, r), baseURL, "")
-			fmt.Printf("[DEBUG-PARSE] Item %d: bookUrl -> '%s'\n", i, book.BookURL)
 		}
 		if r := rules["coverUrl"]; r != "" {
 			book.CoverURL = resolveLegadoURL(evalLegadoRule(item, r), baseURL, "")
@@ -294,41 +287,32 @@ func parseLegadoHTMLSearch(body, baseURL, sourceID, sourceName string, rules map
 		if r := rules["intro"]; r != "" {
 			book.Intro = evalLegadoRule(item, r)
 		}
-		fmt.Printf("[DEBUG-PARSE] Item %d: Final book name='%s', url='%s'\n", i, book.Name, book.BookURL)
 		if strings.TrimSpace(book.Name) != "" {
 			books = append(books, book)
 		}
 	}
-	fmt.Printf("[DEBUG-PARSE] Total books parsed: %d\n", len(books))
 	return books, nil
 }
 
 func evalLegadoListItems(root *goquery.Selection, rule string) ([]*goquery.Selection, error) {
 	_, _, cleanRule := parseLegadoReplaceRule(rule)
-	fmt.Printf("[DEBUG-LIST] evalLegadoListItems rule: '%s' -> clean: '%s'\n", rule, cleanRule)
 
 	parts := strings.Split(cleanRule, "@")
-	fmt.Printf("[DEBUG-LIST] Parts: %v (len=%d)\n", parts, len(parts))
-
 	if len(parts) == 0 {
 		return nil, nil
 	}
 	sel := root
-	for i, part := range parts[:len(parts)-1] {
-		fmt.Printf("[DEBUG-LIST] Processing part %d: '%s'\n", i, part)
+	for _, part := range parts[:len(parts)-1] {
 		next, err := applyLegadoStep(sel, part)
 		if err != nil {
-			fmt.Printf("[DEBUG-LIST] applyLegadoStep error: %v\n", err)
 			return nil, err
 		}
 		sel = next
-		fmt.Printf("[DEBUG-LIST] After step, sel.Length() = %d\n", sel.Length())
 		if sel.Length() == 0 {
 			return nil, nil
 		}
 	}
 	last := parts[len(parts)-1]
-	fmt.Printf("[DEBUG-LIST] Last part: '%s'\n", last)
 
 	// 支持 || OR 操作符：尝试每个候选 CSS 选择器
 	alts := strings.Split(last, "||")
@@ -339,12 +323,10 @@ func evalLegadoListItems(root *goquery.Selection, rule string) ([]*goquery.Selec
 			continue
 		}
 		css, idx := legadoStepToCSS(alt)
-		fmt.Printf("[DEBUG-LIST] Converted '%s' -> css='%s', idx=%d\n", alt, css, idx)
 		if css == "" {
 			continue
 		}
 		found := sel.Find(css)
-		fmt.Printf("[DEBUG-LIST] sel.Find('%s') found %d elements\n", css, found.Length())
 		if found.Length() == 0 {
 			continue
 		}
@@ -412,7 +394,19 @@ func evalLegadoRule(sel *goquery.Selection, rule string) string {
 	// 应用替换规则
 	if replacePattern != "" {
 		if re, err := regexp.Compile(replacePattern); err == nil {
-			result = re.ReplaceAllString(result, replaceWith)
+			// 如果cleanRule为空，提取第一个匹配的捕获组
+			if strings.TrimSpace(cleanRule) == "" {
+				match := re.FindStringSubmatch(result)
+				if len(match) > 1 {
+					result = match[1]
+				} else if len(match) > 0 {
+					result = match[0]
+				} else {
+					result = ""
+				}
+			} else {
+				result = re.ReplaceAllString(result, replaceWith)
+			}
 		}
 	}
 	return result
@@ -420,6 +414,15 @@ func evalLegadoRule(sel *goquery.Selection, rule string) string {
 
 // evalLegadoRuleSingle 解析单个 Legado 规则（不含 || 备选）
 func evalLegadoRuleSingle(sel *goquery.Selection, cleanRule string) string {
+	// 如果规则为空，返回HTML内容（用于正则替换）
+	if strings.TrimSpace(cleanRule) == "" {
+		html, err := sel.Html()
+		if err != nil {
+			return ""
+		}
+		return html
+	}
+
 	parts := strings.Split(cleanRule, "@")
 	current := sel
 	var attr string
@@ -457,6 +460,9 @@ func parseLegadoReplaceRule(rule string) (pattern, replacement, cleanRule string
 	if idx2 >= 0 {
 		pattern = strings.TrimSpace(rest[:idx2])
 		replacement = rest[idx2+2:]
+		// 移除末尾的 ### 终止符
+		replacement = strings.TrimSuffix(replacement, "###")
+		replacement = strings.TrimSpace(replacement)
 	} else {
 		pattern = strings.TrimSpace(rest)
 		replacement = ""

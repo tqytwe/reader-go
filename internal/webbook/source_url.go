@@ -7,6 +7,51 @@ import (
 	"strings"
 )
 
+// sanitizeDoubledURL 修复双重URL问题。
+// 当Legado规则的正则替换产生类似 "https://a.com/https://b.com/path" 的URL时，
+// 提取第一个完整URL（到第二个协议之前）。
+func sanitizeDoubledURL(u string) string {
+	if u == "" {
+		return u
+	}
+	// 查找第一个 https:// 或 http:// 的位置
+	firstHTTPS := strings.Index(u, "https://")
+	firstHTTP := strings.Index(u, "http://")
+	firstProto := -1
+	protoLen := 0
+	if firstHTTPS >= 0 {
+		firstProto = firstHTTPS
+		protoLen = 8 // len("https://")
+	} else if firstHTTP >= 0 {
+		firstProto = firstHTTP
+		protoLen = 7 // len("http://")
+	}
+
+	if firstProto < 0 {
+		return u
+	}
+
+	// 从第一个协议之后开始查找第二个协议
+	afterFirst := u[firstProto+protoLen:]
+	secondHTTPS := strings.Index(afterFirst, "https://")
+	secondHTTP := strings.Index(afterFirst, "http://")
+	secondProto := -1
+	if secondHTTPS >= 0 && (secondHTTP < 0 || secondHTTPS < secondHTTP) {
+		secondProto = secondHTTPS
+	} else if secondHTTP >= 0 {
+		secondProto = secondHTTP
+	}
+
+	// 如果找到第二个协议，截取到第二个协议之前（去掉末尾的斜杠）
+	if secondProto >= 0 {
+		result := u[:firstProto+protoLen+secondProto]
+		// 去掉末尾的斜杠
+		result = strings.TrimSuffix(result, "/")
+		return result
+	}
+	return u
+}
+
 // isLegadoSelectorURLRule reports whether template is a Legado HTML selector rule
 // (e.g. ".list a@href") rather than a URL path template.
 func isLegadoSelectorURLRule(template string) bool {
@@ -130,7 +175,23 @@ func (wb *WebBook) resolveChapterListURL(ctx context.Context, source *BookSource
 		return "", "", "", fmt.Errorf("fetch book page for tocUrl rule: %w", err)
 	}
 
+	// 先提取cleanRule（不包含正则替换部分）
+	cleanRule := template
+	if idx := strings.Index(template, "##"); idx >= 0 {
+		cleanRule = template[:idx]
+	}
+
+	// 使用cleanRule提取原始URL（不进行正则替换）
+	rawURL := evalLegadoRuleOnHTML(resp.Body, cleanRule)
+
+	// 如果原始URL已经是完整URL，直接使用
+	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
+		return rawURL, "GET", "", nil
+	}
+
+	// 否则应用完整的规则（包括正则替换）
 	tocURL := resolveLegadoURL(evalLegadoRuleOnHTML(resp.Body, template), resp.URL, resp.Body)
+	tocURL = sanitizeDoubledURL(tocURL)
 	if tocURL == "" {
 		return "", "", "", fmt.Errorf("tocUrl rule %q matched no URL on book page", template)
 	}

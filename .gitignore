@@ -44,3 +44,4 @@ coverage/
 *.bak
 *.tmp
 .claude/plans/myagents/
+server

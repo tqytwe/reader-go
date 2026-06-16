@@ -259,6 +259,7 @@ func NewServer() (*Server, error) {
 			bookSources.POST("/import", importBookSources)
 			bookSources.POST("/import/collection", importBookSourceCollection)
 			bookSources.POST("/batch/enable", batchSetBookSourceEnabled)
+			bookSources.POST("/batch/delete", batchDeleteBookSources)
 			bookSources.GET("/stats", listSourceStats)
 		}
 
@@ -312,6 +313,23 @@ func NewServer() (*Server, error) {
 			rss.PUT("/items/:id/star", toggleRSSItemStar)
 			rss.POST("/import/collection", importRssSourceCollection)
 		}
+	}
+
+	// 提供前端静态文件（生产环境）
+	staticDir := os.Getenv("STATIC_DIR")
+	if staticDir == "" {
+		// 默认使用web/dist目录
+		wd, _ := os.Getwd()
+		staticDir = filepath.Join(wd, "web", "dist")
+	}
+	if _, err := os.Stat(staticDir); err == nil {
+		r.Static("/assets", filepath.Join(staticDir, "assets"))
+		r.StaticFile("/", filepath.Join(staticDir, "index.html"))
+		r.StaticFile("/favicon.ico", filepath.Join(staticDir, "favicon.ico"))
+		// 所有未匹配的路由都返回index.html（支持前端路由）
+		r.NoRoute(func(c *gin.Context) {
+			c.File(filepath.Join(staticDir, "index.html"))
+		})
 	}
 
 	return &Server{router: r}, nil

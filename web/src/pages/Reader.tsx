@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import DOMPurify from 'dompurify'
 import {
   MenuUnfoldOutlined,
   MenuFoldOutlined,
@@ -29,16 +30,17 @@ const THEME_ICONS: Record<Theme, React.ReactNode> = {
   eye: <ThunderboltOutlined />,
 }
 
-// ── Helper: render plain text content (avoid XSS) ────────────────────
+// ── Helper: render plain text content (avoid XSS via DOMPurify) ──────
 function ContentRenderer({ content, fontSettings }: { content: string; fontSettings: any }) {
   const htmlContent = useMemo(() => {
-    // 如果内容已经包含 HTML 标签（如 <p>, <br>, <div>），直接使用
+    // 如果内容已经包含 HTML 标签（如 <p>, <br>, <div>），使用 DOMPurify 清洗
     if (/<(?:p|br|div|h[1-6])[\s>]/i.test(content)) {
-      return content
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/javascript:/gi, '')
-        .replace(/on\w+=/gi, '')
+      // DOMPurify 会移除所有危险标签和属性（script, onerror, javascript: 等）
+      return DOMPurify.sanitize(content, {
+        ALLOWED_TAGS: ['p', 'br', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+          'span', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'blockquote'],
+        ALLOWED_ATTR: ['href', 'title', 'class'],
+      })
     }
     // 纯文本：将每行转换为 <p> 标签
     return content

@@ -158,24 +158,71 @@ export default function Explore() {
         <Empty description="暂无书单，请确认书源含 exploreUrl / exploreRule" />
       ) : (
         <div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
             {books.map((book) => {
               const inShelf = isBookInShelf(book.bookKey)
               return (
-                <Card key={book.bookKey} size="small" hoverable>
-                  <div className="font-medium line-clamp-1">{book.name}</div>
-                  <Text type="secondary" className="text-sm">{book.author || '未知作者'}</Text>
-                  {book.sourceName && <Tag className="mt-1">{book.sourceName}</Tag>}
-                  {book.intro && (
-                    <Paragraph type="secondary" className="text-xs mt-2 mb-2 line-clamp-2">
-                      {book.intro}
-                    </Paragraph>
-                  )}
-                  <div className="flex gap-2 mt-2">
+                <Card
+                  key={book.bookKey}
+                  hoverable
+                  size="small"
+                  className="overflow-hidden"
+                  cover={
+                    <div className="aspect-[2/3] bg-gradient-to-br from-blue-100 to-purple-100 relative overflow-hidden">
+                      {book.coverUrl ? (
+                        <img
+                          src={book.coverUrl}
+                          alt={book.name}
+                          className="w-full h-full object-cover"
+                          onError={(e) => { e.currentTarget.style.display = 'none' }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <ReadOutlined className="text-4xl text-gray-300" />
+                        </div>
+                      )}
+                      {book.sourceName && (
+                        <Tag className="absolute top-2 left-2" color="blue" style={{ fontSize: 10 }}>
+                          {book.sourceName}
+                        </Tag>
+                      )}
+                    </div>
+                  }
+                >
+                  <Card.Meta
+                    title={
+                      <span className="text-sm line-clamp-1" title={book.name}>
+                        {book.name}
+                      </span>
+                    }
+                    description={
+                      <div>
+                        <Text type="secondary" className="text-xs">
+                          {book.author || '未知作者'}
+                        </Text>
+                        {book.intro && (
+                          <Paragraph
+                            type="secondary"
+                            className="text-xs mt-1 mb-0 line-clamp-2"
+                            style={{ fontSize: 11 }}
+                          >
+                            {book.intro}
+                          </Paragraph>
+                        )}
+                      </div>
+                    }
+                  />
+                  <div className="flex gap-1 mt-2">
                     {inShelf ? (
-                      <Button size="small" disabled>已在书架</Button>
+                      <Button size="small" disabled className="flex-1">已在书架</Button>
                     ) : (
-                      <Button size="small" icon={<PlusOutlined />} onClick={() => handleAdd(book)}>
+                      <Button
+                        size="small"
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        className="flex-1"
+                        onClick={() => handleAdd(book)}
+                      >
                         加入书架
                       </Button>
                     )}
@@ -189,9 +236,7 @@ export default function Explore() {
                         }
                         navigate(`/reader/${encodeURIComponent(book.bookKey)}`)
                       }}
-                    >
-                      阅读
-                    </Button>
+                    />
                   </div>
                 </Card>
               )
