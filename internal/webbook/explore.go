@@ -143,6 +143,7 @@ func exploreBaseURL(base string) string {
 
 // buildExploreURL 将 explore 相对路径拼成可请求的绝对 URL，并替换 {{page}} 等模板变量。
 // 支持 page 参数（默认 1）。
+// 支持 Legado URL 模板语法：<prefix,suffix> 表示 page 前后缀
 func (wb *WebBook) buildExploreURL(source *BookSource, template string, page int) (string, error) {
 	template = strings.TrimSpace(template)
 	if template == "" {
@@ -153,6 +154,9 @@ func (wb *WebBook) buildExploreURL(source *BookSource, template string, page int
 		vars := map[string]string{"page": strconv.Itoa(page)}
 		return wb.evalJSURL(source, template, vars)
 	}
+
+	// 处理 Legado URL 模板语法：<prefix,suffix> 或 <page1,page2,...>
+	template = expandLegadoURLTemplate(template, page)
 
 	if !strings.HasPrefix(template, "http://") && !strings.HasPrefix(template, "https://") {
 		base := exploreBaseURL(source.BaseURL)
@@ -170,6 +174,78 @@ func (wb *WebBook) buildExploreURL(source *BookSource, template string, page int
 	template = strings.ReplaceAll(template, "{{page}}", pageStr)
 	template = strings.ReplaceAll(template, "{page}", pageStr)
 	return template, nil
+}
+
+// expandLegadoURLTemplate 展开 Legado URL 模板语法
+// 支持：<prefix,suffix> - page前后缀模式
+//   - 当 page=1 时，只使用前缀（如果前缀为空则不添加任何内容）
+//   - 当 page>1 时，使用前缀+页码+后缀
+// 支持：<page1,page2,...> - 页码多选模式（返回对应页码）
+func expandLegadoURLTemplate(template string, page int) string {
+	// 查找 <...> 模式
+	start := strings.Index(template, "<")
+	if start < 0 {
+		return template
+	}
+	end := strings.Index(template[start:], ">")
+	if end < 0 {
+		return template
+	}
+	end += start
+
+	// 提取 <...> 内容
+	content := template[start+1 : end]
+	before := template[:start]
+	after := template[end+1:]
+
+	// 检查是否是页码多选模式：<page1,page2,...>
+	// 如果内容全是数字和逗号，则是页码多选
+	isPageList := true
+	for _, c := range content {
+		if c != ',' && (c < '0' || c > '9') {
+			isPageList = false
+			break
+		}
+	}
+
+	if isPageList && strings.Contains(content, ",") {
+		// 页码多选模式，使用对应的页码
+		pages := strings.Split(content, ",")
+		pageIdx := page - 1
+		if pageIdx >= 0 && pageIdx < len(pages) {
+			return before + pages[pageIdx] + after
+		}
+		return before + pages[0] + after
+	}
+
+	// 前后缀模式：<prefix,suffix>
+	if strings.Contains(content, ",") {
+		parts := strings.SplitN(content, ",", 2)
+		prefix := parts[0]
+		suffix := ""
+		if len(parts) > 1 {
+			suffix = parts[1]
+		}
+		pageStr := strconv.Itoa(page)
+
+		// 第一页特殊处理：如果前缀为空，不添加任何内容
+		if page == 1 && prefix == "" {
+			return before + after
+		}
+
+		// 后缀中的 {{page}} 也要替换
+		suffix = strings.ReplaceAll(suffix, "{{page}}", pageStr)
+		suffix = strings.ReplaceAll(suffix, "{page}", pageStr)
+
+		// 如果前缀为空，只添加后缀（不添加页码）
+		if prefix == "" {
+			return before + suffix + after
+		}
+		return before + prefix + pageStr + suffix + after
+	}
+
+	// 单个值，直接使用
+	return before + content + after
 }
 
 // ExploreSearchResult 搜索/筛选结果
