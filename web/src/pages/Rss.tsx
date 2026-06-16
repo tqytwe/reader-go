@@ -42,12 +42,14 @@ export default function Rss() {
 
   // Get unique groups
   const groups = useMemo(() => {
+    if (!feeds || feeds.length === 0) return ['all']
     const groupSet = new Set(feeds.map(f => f.group || 'Default'))
     return ['all', ...Array.from(groupSet)]
   }, [feeds])
 
   // Filtered feeds
   const filteredFeeds = useMemo(() => {
+    if (!feeds) return []
     if (groupFilter === 'all') return feeds
     return feeds.filter(f => (f.group || 'Default') === groupFilter)
   }, [feeds, groupFilter])
@@ -421,7 +423,7 @@ export default function Rss() {
                       </div>
                     </div>
                     <div className="divide-y rounded-xl border bg-white">
-                      {preview.items.map((item: RssItem, index: number) => (
+                      {(preview.items || []).map((item: RssItem, index: number) => (
                         <div key={`${item.guid}-${index}`} className="p-4">
                           <div className="font-medium text-gray-900">{item.title || 'Untitled'}</div>
                           <div className="mt-1 text-xs text-gray-500 break-all">{item.link}</div>
@@ -431,7 +433,7 @@ export default function Rss() {
                     </div>
                   </div>
                 )
-              ) : items.length === 0 ? (
+              ) : !items || items.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">
                   <div className="text-base text-gray-700">这个订阅源当前没有已抓取条目。</div>
                   <div className="mt-2 text-sm">

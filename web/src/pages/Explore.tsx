@@ -50,14 +50,17 @@ export default function Explore() {
 
   useEffect(() => {
     api.getBookSources().then((data: unknown) => {
-      const list = (data as { id: number; name: string; exploreUrl?: string }[]).filter((s) => s.exploreUrl)
+      const arr = Array.isArray(data) ? data : []
+      const list = (arr as { id: number; name: string; exploreUrl?: string }[]).filter((s) => s.exploreUrl)
       setSources(list)
       if (list[0]) setSourceId(list[0].id)
+    }).catch(() => {
+      setSources([])
     })
   }, [])
 
   const tabOptions = useMemo(() => {
-    const valid = tabs.filter((t) => t.url?.trim())
+    const valid = (tabs || []).filter((t) => t.url?.trim())
     if (valid.length > 0) {
       return valid.map((t) => ({ label: t.title, value: t.title }))
     }
@@ -126,7 +129,7 @@ export default function Explore() {
           placeholder="选择书源"
           value={sourceId}
           onChange={setSourceId}
-          options={sources.map((s) => ({ label: s.name, value: s.id }))}
+          options={(sources || []).map((s) => ({ label: s.name, value: s.id }))}
         />
         <Select
           className="min-w-[160px]"
@@ -142,7 +145,7 @@ export default function Explore() {
 
       {loading ? (
         <div className="py-16 text-center"><Spin tip="解析书海中..." /></div>
-      ) : books.length === 0 ? (
+      ) : !books || books.length === 0 ? (
         <Empty description="暂无书单，请确认书源含 exploreUrl / exploreRule" />
       ) : (
         <div>
