@@ -48,10 +48,11 @@ func getExplore(c *gin.Context) {
 		errResp(c, 404, "book source not found")
 		return
 	}
-	if src.ExploreURL == "" {
-		ok(c, gin.H{"sourceId": sourceID, "tab": tab, "tabs": []any{}, "items": []any{}, "books": []any{}, "page": page, "pageSize": pageSize, "hasMore": false, "total": 0})
-		return
-	}
+	// 移除 ExploreURL 为空时的早期返回，让 ExploreSearch 处理回退逻辑
+	// if src.ExploreURL == "" {
+	// 	ok(c, gin.H{"sourceId": sourceID, "tab": tab, "tabs": []any{}, "items": []any{}, "books": []any{}, "page": page, "pageSize": pageSize, "hasMore": false, "total": 0})
+	// 	return
+	// }
 
 	wbSrc := convertBookSource(src)
 	result, err := app.WebBook.ExploreSearch(c.Request.Context(), wbSrc, tab, page, pageSize, search, category)

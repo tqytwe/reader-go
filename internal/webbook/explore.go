@@ -316,8 +316,17 @@ func (wb *WebBook) ExploreSearch(ctx context.Context, source *BookSource, tab st
 		return nil, fmt.Errorf("source is nil")
 	}
 
-	// 处理 @js: 前缀：先执行 JavaScript 获取实际的 URL/tabs
+	// 如果 exploreUrl 为空，使用 baseUrl 首页作为回退
 	exploreURL := source.ExploreURL
+	if strings.TrimSpace(exploreURL) == "" {
+		// 没有 exploreUrl，使用 baseUrl 首页来获取书籍
+		if strings.TrimSpace(source.BaseURL) != "" {
+			return wb.ExploreSearchFallback(ctx, source, "", page, pageSize)
+		}
+		return nil, fmt.Errorf("source has no exploreUrl or baseUrl")
+	}
+
+	// 处理 @js: 前缀：先执行 JavaScript 获取实际的 URL/tabs
 	if strings.HasPrefix(exploreURL, "@js:") {
 		jsResult, err := wb.evalJSURL(source, exploreURL, map[string]string{"page": strconv.Itoa(page)})
 		if err != nil {
@@ -546,4 +555,63 @@ func (wb *WebBook) GetSourceByID(sourceID string) *BookSource {
 		}
 	}
 	return nil
+}
+
+// ExploreSearchFallback 当书源没有 exploreUrl 时，使用 baseUrl 首页来获取书籍
+func (wb *WebBook) ExploreSearchFallback(ctx context.Context, source *BookSource, keyword string, page, pageSize int) (*ExploreSearchResult, error) {
+	// 尝试使用 baseUrl 作为首页 URL
+	homeURL := source.BaseURL
+	if strings.TrimSpace(homeURL) == "" {
+		return nil, fmt.Errorf("source has no baseUrl")
+	}
+
+	// 确保 URL 完整
+	if !strings.HasPrefix(homeURL, "http") {
+		homeURL = "https://" + homeURL
+	}
+
+	// 获取首页内容
+	resp, err := wb.fetch(ctx, source, homeURL, "GET", "")
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用 searchRule 解析首页（如果有的话）
+	ruleText := strings.TrimSpace(source.SearchRule)
+	if ruleText == "" {
+		return nil, fmt.Errorf("source has no searchRule for parsing")
+	}
+
+	rules := parseLegadoFieldRules(ruleText)
+	books, err := parseLegadoSearchResults(resp.Body, resp.URL, source.ID, source.Name, rules)
+	if err != nil {
+		return nil, err
+	}
+
+	// 分页处理
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start >= len(books) {
+		books = []Book{}
+	} else {
+		if end > len(books) {
+			end = len(books)
+		}
+		books = books[start:end]
+	}
+
+	// 构建返回结果
+	result := &ExploreSearchResult{
+		SourceID:   source.ID,
+		SourceName: source.Name,
+		Tab:        "首页",
+		URL:        homeURL,
+		Tabs:       []ExploreTab{{Title: "首页", URL: homeURL}},
+		Books:      books,
+		Page:       page,
+		PageSize:   pageSize,
+		HasMore:    end < len(books),
+	}
+
+	return result, nil
 }
