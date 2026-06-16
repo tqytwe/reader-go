@@ -3,12 +3,13 @@ package rss
 import "time"
 
 // FeedType represents the type of RSS feed
-type FeedType int // 0=unknown, 1=RSS2.0, 2=Atom
+type FeedType int // 0=unknown, 1=RSS2.0, 2=Atom, 3=HTML
 
 const (
 	FeedTypeUnknown FeedType = 0
 	FeedTypeRSS2    FeedType = 1
 	FeedTypeAtom    FeedType = 2
+	FeedTypeHTML    FeedType = 3 // HTML页面自动解析
 )
 
 // Feed represents an RSS subscription source

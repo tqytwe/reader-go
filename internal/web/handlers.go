@@ -1018,8 +1018,15 @@ func createRSSFeed(c *gin.Context) {
 	parser := rss.NewParser()
 	result, resolvedURL, err := parser.ParseWithDiscoveryCtx(c.Request.Context(), feedURL)
 	if err != nil {
-		errResp(c, 400, "failed to parse feed: "+err.Error())
-		return
+		// 自适应：尝试HTML页面解析
+		htmlParser := rss.NewHTMLParser(nil)
+		if htmlResult, htmlErr := htmlParser.ParseHTML(c.Request.Context(), feedURL); htmlErr == nil && len(htmlResult.Items) > 0 {
+			result = htmlResult
+			err = nil
+		} else {
+			errResp(c, 400, "failed to parse feed: "+err.Error())
+			return
+		}
 	}
 	if resolvedURL != "" {
 		feedURL = resolvedURL

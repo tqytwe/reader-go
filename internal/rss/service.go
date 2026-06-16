@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -12,13 +13,18 @@ import (
 type Service struct {
 	db     *sql.DB
 	parser *Parser
+	client *http.Client
 }
 
 // NewService creates a new RSS service
 func NewService(db *sql.DB) *Service {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
 	return &Service{
 		db:     db,
-		parser: NewParser(),
+		parser: NewParserWithClient(client),
+		client: client,
 	}
 }
 
@@ -168,7 +174,18 @@ func (s *Service) PreviewFeed(ctx context.Context, feed *Feed) (*ParseResult, st
 		result, err := s.parser.ParseLegadoCtx(ctx, feed)
 		return result, feed.FeedURL, err
 	}
-	return s.parser.ParseWithDiscoveryCtx(ctx, feed.FeedURL)
+	// 先尝试RSS/Atom解析
+	result, resolvedURL, err := s.parser.ParseWithDiscoveryCtx(ctx, feed.FeedURL)
+	if err == nil {
+		return result, resolvedURL, nil
+	}
+	// 自适应：尝试HTML页面解析
+	htmlParser := NewHTMLParser(s.client)
+	if htmlResult, htmlErr := htmlParser.ParseHTML(ctx, feed.FeedURL); htmlErr == nil && len(htmlResult.Items) > 0 {
+		return htmlResult, feed.FeedURL, nil
+	}
+	// 返回原始错误
+	return nil, feed.FeedURL, err
 }
 
 // FetchFeedCtx fetches and parses a feed with context for timeout control
@@ -192,6 +209,17 @@ func (s *Service) FetchFeedCtx(ctx context.Context, feed *Feed) ([]*FeedItem, er
 			feed.FeedURL = resolvedURL
 		}
 	}
+
+	// 自适应：如果RSS/Atom解析失败，尝试HTML页面解析
+	if err != nil && !useLegado {
+		htmlParser := NewHTMLParser(s.client)
+		if htmlResult, htmlErr := htmlParser.ParseHTML(ctx, feed.FeedURL); htmlErr == nil && len(htmlResult.Items) > 0 {
+			result = htmlResult
+			err = nil
+			feed.FeedType = FeedTypeHTML // 标记为HTML类型
+		}
+	}
+
 	if err != nil {
 		// #region agent log
 		fetchDebugLog("service.go:FetchFeed", "fetch failed", "H3", "pre-fix", map[string]interface{}{
