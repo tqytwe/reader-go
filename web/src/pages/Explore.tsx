@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Select, Card, Spin, message, Empty, Button, Tag, Typography, Pagination } from 'antd'
 import { PlusOutlined, ReadOutlined } from '@ant-design/icons'
@@ -47,6 +47,7 @@ export default function Explore() {
   const [hasMore, setHasMore] = useState(false)
   const { isBookInShelf } = useShelfStore()
   const { addShelfBook } = useStore()
+  const requestIdRef = useRef(0)
 
   useEffect(() => {
     api.getBookSources().then((data: unknown) => {
@@ -69,9 +70,12 @@ export default function Explore() {
 
   const loadExplore = async () => {
     if (!sourceId) return
+    const thisId = ++requestIdRef.current
     setLoading(true)
     try {
       const res = (await api.getExplore(sourceId, tab || undefined, page, pageSize)) as ExploreResponse
+      // Ignore stale responses caused by race conditions
+      if (thisId !== requestIdRef.current) return
       if (res.tabs?.length) setTabs(res.tabs)
       if (res.tab && res.tab !== tab) setTab(res.tab)
       const list = res.books ?? res.items ?? []
@@ -79,12 +83,17 @@ export default function Explore() {
       setTotal(res.total ?? list.length)
       setHasMore(Boolean(res.hasMore))
     } catch (e: unknown) {
+      // Ignore stale responses caused by race conditions
+      if (thisId !== requestIdRef.current) return
       message.error(e instanceof Error ? e.message : '加载失败')
       setBooks([])
+      setTabs([])
       setTotal(0)
       setHasMore(false)
     } finally {
-      setLoading(false)
+      if (thisId === requestIdRef.current) {
+        setLoading(false)
+      }
     }
   }
 

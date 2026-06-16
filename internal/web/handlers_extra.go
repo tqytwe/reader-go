@@ -56,7 +56,20 @@ func getExplore(c *gin.Context) {
 	result, err := app.WebBook.ExploreSearch(c.Request.Context(), wbSrc, tab, page, pageSize, search, category)
 	if err != nil {
 		logError(fmt.Errorf("explore source %d: %w", sourceID, err))
-		c.JSON(200, resp{Code: -1, Message: "explore failed: " + err.Error()})
+		// Even on error, try to return tabs so the frontend can keep showing them
+		var tabsForError []webbook.ExploreTab
+		if src.ExploreURL != "" {
+			_, tabsForError, _, _ = webbook.ResolveExploreURL(src.ExploreURL, tab)
+		}
+		c.JSON(200, gin.H{
+			"code":    -1,
+			"message": "explore failed: " + err.Error(),
+			"tabs":    tabsForError,
+			"items":   []any{},
+			"books":   []any{},
+			"total":   0,
+			"hasMore": false,
+		})
 		return
 	}
 

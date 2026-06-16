@@ -275,27 +275,38 @@ func (p *ContentParser) ParseJSON(data, chapterTitle, chapterURL, bookName, book
 }
 
 // cleanTags 清理非白名单标签
+// 采用递归处理直接子节点的方式，避免 Find("*") 在文档顺序迭代时
+// 因父节点先被替换导致子节点脱离 DOM 的问题。
 func (p *ContentParser) cleanTags(sel *goquery.Selection) {
-	// 递归处理所有子节点
-	sel.Find("*").Each(func(_ int, s *goquery.Selection) {
+	// 收集直接子元素（Children 只返回 ElementNode，不含文本节点）
+	children := sel.Children()
+	children.Each(func(_ int, s *goquery.Selection) {
 		tagName := s.Get(0).Data
-		isKeep := false
-		for _, keep := range p.keepTags {
-			if strings.EqualFold(tagName, keep) {
-				isKeep = true
-				break
-			}
-		}
-		if !isKeep {
-			// 提取文本，替换原元素
+		if p.isKeepTag(tagName) {
+			// 白名单元素：递归清理其子节点
+			p.cleanTags(s)
+		} else if tagName == "script" || tagName == "style" {
+			// 脚本和样式：完全移除，不保留文本
+			s.Remove()
+		} else {
+			// 其他非白名单元素：用文本内容替换，保留子级文本
 			text := s.Text()
 			if p.KeepLineBreaks {
-				// 保留段落间的换行
 				text = strings.ReplaceAll(text, "\n", " ")
 			}
 			s.ReplaceWithHtml(text)
 		}
 	})
+}
+
+// isKeepTag 判断标签是否在白名单中
+func (p *ContentParser) isKeepTag(tagName string) bool {
+	for _, keep := range p.keepTags {
+		if strings.EqualFold(tagName, keep) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractContent 提取清洗后的文本内容
@@ -344,6 +355,12 @@ func (p *ContentParser) extractContent(sel *goquery.Selection) string {
 				}
 			case "img":
 				// 漫画模式下正文可能只有图片，这里不把 alt 文本混入小说正文。
+			default:
+				// 其他元素（span, a, strong, em 等行内元素）：提取文本，不加段落分隔
+				t := strings.TrimSpace(s.Text())
+				if t != "" {
+					texts = append(texts, t)
+				}
 			}
 		}
 	})

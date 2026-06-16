@@ -116,6 +116,12 @@ func ResolveExploreURL(exploreURL, tab string) (resolved string, tabs []ExploreT
 				return t.URL, tabs, tab, nil
 			}
 		}
+		// Tab not found - fall back to first valid tab instead of error
+		for _, t := range tabs {
+			if strings.TrimSpace(t.URL) != "" {
+				return t.URL, tabs, t.Title, nil
+			}
+		}
 		return "", tabs, tab, fmt.Errorf("explore tab not found: %s", tab)
 	}
 	for _, t := range tabs {

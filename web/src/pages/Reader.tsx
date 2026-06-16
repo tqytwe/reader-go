@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   MenuUnfoldOutlined,
@@ -31,12 +31,29 @@ const THEME_ICONS: Record<Theme, React.ReactNode> = {
 
 // ── Helper: render plain text content (avoid XSS) ────────────────────
 function ContentRenderer({ content, fontSettings }: { content: string; fontSettings: any }) {
-  // Simple HTML sanitization: strip script/style tags
-  const sanitized = content
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/javascript:/gi, '')
-    .replace(/on\w+=/gi, '')
+  const htmlContent = useMemo(() => {
+    // 如果内容已经包含 HTML 标签（如 <p>, <br>, <div>），直接使用
+    if (/<(?:p|br|div|h[1-6])[\s>]/i.test(content)) {
+      return content
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/javascript:/gi, '')
+        .replace(/on\w+=/gi, '')
+    }
+    // 纯文本：将每行转换为 <p> 标签
+    return content
+      .split('\n')
+      .map(line => {
+        const trimmed = line.trim()
+        if (!trimmed) return ''
+        const escaped = trimmed
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+        return `<p>${escaped}</p>`
+      })
+      .join('\n')
+  }, [content])
 
   return (
     <div
@@ -47,7 +64,7 @@ function ContentRenderer({ content, fontSettings }: { content: string; fontSetti
         lineHeight: fontSettings.lineHeight,
         letterSpacing: `${fontSettings.letterSpacing}px`,
       }}
-      dangerouslySetInnerHTML={{ __html: sanitized }}
+      dangerouslySetInnerHTML={{ __html: htmlContent }}
     />
   )
 }

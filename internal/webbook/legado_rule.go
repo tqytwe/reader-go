@@ -331,8 +331,9 @@ func evalLegadoListItems(root *goquery.Selection, rule string) ([]*goquery.Selec
 	return out, nil
 }
 
-// evalLegadoRule 解析 Legado 规则字符串，支持 @ 链式选择器和 ## 替换规则。
+// evalLegadoRule 解析 Legado 规则字符串，支持 @ 链式选择器、|| 备选和 ## 替换规则。
 // 规则格式：selector1@selector2@attr##replacePattern##replacement
+// 支持 || 备选：rule1||rule2 表示先尝试 rule1，为空则尝试 rule2
 // 其中 ## 后的部分为替换规则（支持正则替换）。
 func evalLegadoRule(sel *goquery.Selection, rule string) string {
 	if sel == nil || sel.Length() == 0 {
@@ -341,6 +342,41 @@ func evalLegadoRule(sel *goquery.Selection, rule string) string {
 	// 分离替换规则
 	replacePattern, replaceWith, cleanRule := parseLegadoReplaceRule(rule)
 
+	// 支持 || 备选操作符：尝试每个备选规则，返回第一个非空结果
+	if strings.Contains(cleanRule, "||") {
+		alts := strings.Split(cleanRule, "||")
+		for _, alt := range alts {
+			alt = strings.TrimSpace(alt)
+			if alt == "" {
+				continue
+			}
+			result := evalLegadoRuleSingle(sel, alt)
+			if result != "" {
+				// 应用替换规则
+				if replacePattern != "" {
+					if re, err := regexp.Compile(replacePattern); err == nil {
+						result = re.ReplaceAllString(result, replaceWith)
+					}
+				}
+				return result
+			}
+		}
+		return ""
+	}
+
+	result := evalLegadoRuleSingle(sel, cleanRule)
+
+	// 应用替换规则
+	if replacePattern != "" {
+		if re, err := regexp.Compile(replacePattern); err == nil {
+			result = re.ReplaceAllString(result, replaceWith)
+		}
+	}
+	return result
+}
+
+// evalLegadoRuleSingle 解析单个 Legado 规则（不含 || 备选）
+func evalLegadoRuleSingle(sel *goquery.Selection, cleanRule string) string {
 	parts := strings.Split(cleanRule, "@")
 	current := sel
 	var attr string
@@ -359,15 +395,7 @@ func evalLegadoRule(sel *goquery.Selection, rule string) string {
 		}
 		current = next
 	}
-	result := extractLegadoAttr(current, attr)
-
-	// 应用替换规则
-	if replacePattern != "" {
-		if re, err := regexp.Compile(replacePattern); err == nil {
-			result = re.ReplaceAllString(result, replaceWith)
-		}
-	}
-	return result
+	return extractLegadoAttr(current, attr)
 }
 
 // parseLegadoReplaceRule 从规则字符串中解析 ## 替换规则。

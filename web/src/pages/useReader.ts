@@ -170,6 +170,7 @@ export function useReader() {
           if (cancelled) return
 
           const info = bookRes as unknown as LocalBook
+          if (!info) throw new Error('本地书籍信息加载失败')
           const tocData: TOCItem[] = (info.chapters ?? []).map((ch) => ({
             name: ch.title,
             url: String(ch.index),
@@ -226,8 +227,10 @@ export function useReader() {
         if (cancelled) return
 
         const info = bookRes as unknown as BookInfoResponse
+        if (!info) throw new Error('书籍信息加载失败')
         const tocBody = tocRes as unknown as TocResponse
-        const tocData: TOCItem[] = (tocBody.chapters ?? []).map((ch) => ({
+        const chapters = (tocBody?.chapters) ?? []
+        const tocData: TOCItem[] = chapters.map((ch) => ({
           name: ch.name,
           url: ch.url,
         }))
@@ -321,6 +324,7 @@ export function useReader() {
 
         const res = await api.getBookContent(bookKey, currentChapter.url)
         const body = res as unknown as ContentResponse
+        if (!body) throw new Error('章节内容加载失败')
         setContent({
           chapterName: currentChapter.name,
           content: body.content ?? '',
@@ -329,6 +333,11 @@ export function useReader() {
         })
       } catch (err: unknown) {
         console.error('Failed to load chapter:', err)
+        setContent(prev => ({
+          ...prev,
+          content: '章节内容加载失败: ' + (err instanceof Error ? err.message : '未知错误'),
+          chapterName: currentChapter.name,
+        }))
       }
     }
 
